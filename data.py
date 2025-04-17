@@ -14,6 +14,7 @@ import os
 import csv
 import pandas as pd
 import torch
+import pymeshlab as ml
 
 
 def delete_vertices(mesh_file, vertex_indices_to_remove):
@@ -357,23 +358,43 @@ def distance_proportion_averages(dataset_type, output_directory):
 
     print(f"Average proportions per age saved to: {output_csv_path}")
 
+def smooth_datasets(folder_path):
+
+    file_name = '1216.obj'
+    smooth = 1
+
+    # combine folder_path with '1.obj'
+    mesh = folder_path + f'/{file_name}'
+
+    ms = ml.MeshSet()
+    ms.load_new_mesh(mesh)
+
+    ms.apply_coord_laplacian_smoothing(
+        stepsmoothnum=smooth,   # Smoothing steps
+        boundary=True,          # Smooth boundary vertices as well
+        cotangentweight=True,   # Use cotangent weighting
+        selected=False          # Affects entire mesh
+    )
+
+    ms.save_current_mesh(f"smooth_tests/{file_name}")
+
 
 # Example usage
 if __name__ == "__main__":
 
-    # dataset = "unified_normals_dataset"
-    # dataset_type = "combined"
-    # reconstructions = None
-    # mesh_names = None
-    # template_path = None
-    # output_directory = "measurements"
-
-    dataset = "DATA_BABIES_FACES" 
-    dataset_type = "not-combined"
+    dataset = "unified_normals_dataset"
+    dataset_type = "combined"
     reconstructions = None
     mesh_names = None
     template_path = None
     output_directory = "measurements"
+
+    # dataset = "DATA_BABIES_FACES" 
+    # dataset_type = "not-combined"
+    # reconstructions = None
+    # mesh_names = None
+    # template_path = None
+    # output_directory = "measurements"
 
     folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
         
@@ -387,6 +408,9 @@ if __name__ == "__main__":
     # folder_path = "/raid/compass/athena/data/"
     # remove_files_with_keyword(folder_path)
 
+    #### RUN
     # calculate_distances_in_folder(folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
-    add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory)
-    distance_proportion_averages(dataset_type, output_directory)
+    # add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory)
+    # distance_proportion_averages(dataset_type, output_directory)
+
+    smooth_datasets(folder_path)

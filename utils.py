@@ -2,6 +2,7 @@ import os
 import yaml
 import trimesh
 import torch
+import pickle
 
 import matplotlib.cm
 import torch_geometric.transforms
@@ -158,3 +159,93 @@ def get_model_list(dirname, key):
     gen_models.sort()
     last_model_name = gen_models[-1]
     return last_model_name
+
+def age_per_feature_new_ages(z, new_ages, swapped_feature, latent_size, age_latent_size, latent_regions, bs):
+
+    latent_per_feature_size = (latent_size - age_latent_size) // len(latent_regions)
+
+    age_latents = z[:, -age_latent_size:]
+    swapped_latent_index = latent_regions[swapped_feature][0] // latent_per_feature_size
+
+    # make a gt_age matrix of size [16,age_latent_size]
+    gt_feature_ages = torch.zeros([bs ** 2, age_latent_size],
+                                    device=age_latents.device,
+                                    dtype=age_latents.dtype)
+
+    # make new gt_age matrix with swapped feature ages
+    for j in range(bs):
+        for i in range(bs):
+            gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
+            if i != j:
+                gt_feature_ages[i * bs + j, swapped_latent_index-1] = new_ages[j]
+
+    # # try now for 45 age latets (or x age)
+    # for j in range(bs):
+    #     for i in range(bs):
+    #         # Repeat each new_age value 5 times to fill the corresponding 5 latents
+    #         gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
+    #         if i != j:
+    #             # Update the swapped latent index group (5 latents) with the new_age[j]
+    #             start_idx = (swapped_latent_index - 1) * 5
+    #             end_idx = start_idx + 5
+    #             gt_feature_ages[i * bs + j, start_idx:end_idx] = new_ages[j].repeat(5)
+
+
+    return gt_feature_ages
+
+
+
+def modify_age_latent_based_on_gt(precomputed_storage_path, gt_age, min_delta, max_age):
+    """
+    Modify the age latent based on the ground truth age (gt_age).
+    The new age is randomly selected from:
+    - [0, gt_age - min_delta] or
+    - [gt_age + min_delta, max_age]
+
+    Args:
+        gt_age (torch.Tensor): The ground truth age tensor (batch_size, 1).
+        min_delta (float): The minimum difference for the modification.
+        max_age (float): The maximum age value (normalized).
+
+    Returns:
+        torch.Tensor: The modified age latent tensor.
+    """
+
+    # option = 1 # 1: select from [0, gt_age - min_delta] or [gt_age + min_delta, max_age]
+    option = 2 # 2: select from [0,max_age] excluding gt_age
+
+    lower_range = (gt_age - min_delta).clamp(min=0.0)
+    upper_range = (gt_age + min_delta).clamp(max=max_age)
+
+    batch_size = gt_age.size(0)
+
+    # Create a mask for valid ages
+    all_ages = torch.arange(0, max_age + 1, device=gt_age.device).unsqueeze(0).repeat(batch_size, 1)
+
+    if option == 1:
+        valid_mask = (all_ages < lower_range.unsqueeze(1)) | (all_ages > upper_range.unsqueeze(1))
+    elif option == 2:
+        valid_mask = (all_ages != gt_age.unsqueeze(1))
+
+    # Filter valid ages
+    valid_ages = [all_ages[i][valid_mask[i]] for i in range(batch_size)]
+
+    # Randomly select a valid age for each batch element
+    modified_age_latent = torch.stack([
+        valid_ages[i][torch.randint(0, len(valid_ages[i]), (1,))] for i in range(batch_size)
+    ])
+
+    # normalise the modified age latent
+
+    storage_path = os.path.join(*precomputed_storage_path)
+    try:
+        with open(storage_path, 'rb') as file:
+            age_mean, age_std = \
+                pickle.load(file)
+    except FileNotFoundError:
+        print("Could not find normalise stats file")
+
+    # normalise age
+    modified_age_latent = (modified_age_latent - age_mean) / age_std
+
+    return modified_age_latent

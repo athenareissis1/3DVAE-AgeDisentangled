@@ -3,10 +3,10 @@ data:
   precomputed_path: precomputed
   dataset_type: faces_babies_faces
   dataset_path: /raid/compass/athena/data/DATA_BABIES_FACES
-  dataset_metadata_path: preprocessing_data/BABIES_faces_metadata_YEARS.csv
-  # template_path: preprocessing_data/face_combined_8_features.ply    # vertices should be coloured (vertex semantic segmentation)
+  dataset_metadata_path: preprocessing_data/BABIES_faces_metadata.csv
+  # template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
   # precomputed_path: precomputed
-  # dataset_type: faces_babies_faces_combined
+  # dataset_type: faces_babies_faces_combined 
   # dataset_path: /raid/compass/athena/data/unified_normals_dataset 
   # dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
   dataset_remove: []                                                        # remove specific meshes from the dataset
@@ -58,11 +58,14 @@ optimization:
 
   mi_weight: 0 #1
 
-  adversarial_weight: 1                                           
+  latent_similarity_weight: 0 #1
+
+  adversarial_weight: 0 #      
+  adversarial_latent_weight: 5 #1                                     
 
 model:
   sampling:
-    type: basic  # r_weighted                                                               # {basic, r_weighted}. Delete precomputed file if changed
+    type: basic #basic  # r_weighted                                                               # {basic, r_weighted}. Delete precomputed file if changed
     sampling_factors: [4, 2, 2, 2]
   spirals:
     length: [9, 9, 9, 9]                                                        # length of spiral for each convolution. Delete precomputed file if changed.
@@ -73,11 +76,16 @@ model:
   age_per_feature: True                                                        # if True, a single age latent is added per feature. 
   age_latent_size: 9                                                         # size of additional age latents
   pre_z_sigmoid: False
+
   age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
   contrastive_loss: False #True                                                        # if True, contrastive loss is used
   mi_loss: False #True
-  adversarial_loss: True                                                        # if True, adversarial loss is used
-  discriminator_type: "MLP" # "Spiral" "MLP"
+  adversarial_loss: False #True                                                        # if True, adversarial loss is used
+  adversarial_loss_latent: True
+  conditional_vae: False #True
+  cycle_consistency: False #True
+
+  discriminator_type: "Spiral" # "Spiral" "MLP"
   intermediate_layers: False                                                    # if True, intermediate layers are used
   intermediate_layers_count: 2                                                 # number of intermediate layers
   intermediate_layers_size: 120                                                 # size of the intermediate layers

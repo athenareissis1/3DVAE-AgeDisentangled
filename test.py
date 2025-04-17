@@ -8,6 +8,7 @@ import pytorch3d.loss
 import random
 import neptune
 
+import tensorflow as tf
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -30,14 +31,21 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.manifold import TSNE
 from sklearn.cross_decomposition import CCA
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mutual_info_score, accuracy_score
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression, LogisticRegression
 
+from disentanglement_lib.evaluation.metrics import mig, dci, sap_score, beta_vae
+
+import scipy
 from scipy.stats import mode
 
 from sap_score import sap
 from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
 
 from data import calculate_distances_in_folder, add_proportions_age_gender_to_csv, distance_proportion_averages
+
+# from disentanglement_lib.evaluation.metrics import mig, dci, sap_score, beta_vae
 
 import utils
 
@@ -104,22 +112,26 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # # TEST TO RUN (run all on val set then once model is finalised move to test set)
+        # TEST TO RUN (run all on val set then once model is finalised move to test set)
         # self.set_renderings_size(512)
         # self.set_rendering_background_color([1, 1, 1])
         # self.per_variable_range_experiments(use_z_stats=False)
         # self.random_generation_and_rendering(n_samples=16)
 
         if self._config['model']['age_disentanglement']:
-            # self.age_encoder_check(self._train_loader, self._val_loader)
             # self.dataset_age_split(self._train_loader, self._val_loader, self._test_loader)
+            # self.age_encoder_check(self._train_loader, self._val_loader)
+            # self.age_prediction_encode_output(self._train_loader, self._val_loader)
             # self.age_prediction_MLP(self._train_loader, self._val_loader)
             # self.age_latent_changing(self._val_loader)
-            # self.age_prediction_encode_output(self._train_loader, self._val_loader)
             # self.tsne_visualization_of_feature_latents(self._train_loader, self._val_loader, self._test_loader)
-            # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-            self.proportions(self._val_loader)
-            self.plot_proportions()
+            self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+            # self.proportions(self._val_loader)
+            # self.plot_proportions()
+
+            # relatives tests
+            # self.relatives_aging_diff()
+            # self.relatives_aging()
         
         self._manager.log_hyperparameters(self.log, self._config, self._logging)
         
@@ -312,7 +324,8 @@ class Tester:
         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
                     hue="region", palette=palette)
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
-        self.log['test/latent_exploration.svg'].upload(os.path.join(self._out_dir, 'latent_exploration.svg'))
+        plt.savefig(os.path.join(self._out_dir, 'latent_exploration.png'))
+        self.log['test/latent_exploration.png'].upload(os.path.join(self._out_dir, 'latent_exploration.png'))
 
     def random_latent(self, n_samples, z_range_multiplier=1):
         if self._is_vae:  # sample from normal distribution if vae
@@ -1071,29 +1084,15 @@ class Tester:
         # # ##################
 
 
-    def age_per_feature_gt_age(self, z, gt_age, swapped_feature):
+    def age_per_feature_new_ages(self, z, gt_age, swapped_feature):
         assert self._config['data']['swap_features']
 
         latent_size = self._manager.model_latent_size
         age_latent_size = self._config['model']['age_latent_size']
-        latent_per_feature_size = (latent_size - age_latent_size) // len(self._manager.latent_regions)
-
-        age_latents = z[:, -age_latent_size:]
-        swapped_latent_index = self._manager.latent_regions[swapped_feature][0] // latent_per_feature_size
-
+        latent_regions = self._manager.latent_regions
         bs = self._config['optimization']['batch_size']
 
-        # make a gt_age matrix of size [16,9]
-        gt_feature_ages = torch.zeros([bs ** 2, age_latent_size],
-                                        device=age_latents.device,
-                                        dtype=age_latents.dtype)
-
-        # make new gt_age matrix with swapped feature ages
-        for j in range(bs):
-            for i in range(bs):
-                gt_feature_ages[i * bs + j, ::] = gt_age[i, ::]
-                if i != j:
-                    gt_feature_ages[i * bs + j, swapped_latent_index] = gt_age[j]
+        gt_feature_ages = utils.age_per_feature_new_ages(z, gt_age, swapped_feature, latent_size, age_latent_size, latent_regions, bs)
 
         return gt_feature_ages
 
@@ -1673,11 +1672,12 @@ class Tester:
         else:
             datasets = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'Dataset'])
 
-        train_feature_latents, _, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, diagonal=diagonal)
-        val_feature_latents, _, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,diagonal=diagonal)
-        test_feature_latents, _, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,diagonal=diagonal)
+        train_feature_latents, train_age_latents, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, diagonal=diagonal)
+        val_feature_latents, val_age_latents, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,diagonal=diagonal)
+        test_feature_latents, test_age_latents, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,diagonal=diagonal)
 
         feature_latents = np.concatenate((train_feature_latents, val_feature_latents, test_feature_latents), axis=0)
+        age_latents = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
         gt_ages = np.concatenate((train_gt_ages, val_gt_ages, test_gt_ages), axis=0)
         datasets = [train_dataset, val_dataset, test_dataset]
         datasets = np.concatenate(datasets, axis=0)
@@ -1735,61 +1735,348 @@ class Tester:
                 plt.savefig(file_path_svg)
 
             plt.close()
+        
+        # Perform t-SNE on age latents and visualize
+        tsne_age_latents = TSNE(n_components=2, random_state=random_state)
+        age_latents_scaled = sc.fit_transform(age_latents)
+        tsne_age_results = tsne_age_latents.fit_transform(age_latents_scaled)
 
+        plt.figure(figsize=(8, 6))
+        scatter = plt.scatter(tsne_age_results[:, 0], tsne_age_results[:, 1], c=gt_ages, cmap='viridis', alpha=0.6)
+        # plt.colorbar(scatter, label='Identity')
+        plt.title('t-SNE Visualization of Age Latents by Identity')
+        plt.xlabel('t-SNE Dimension 1')
+        plt.ylabel('t-SNE Dimension 2')
 
+        file_path = os.path.join(self._out_dir, 'tsne_age_latents_by_identity.png')
+        plt.savefig(file_path)
+        # self.log['test/tsne_age_latents_by_identity'].upload(file_path)
+        plt.close()
+
+        plt.figure(figsize=(8, 6))
+        scatter = plt.scatter(tsne_age_results[:, 0], tsne_age_results[:, 1], c=gt_feature_numeric, cmap=cmap, alpha=0.6)
+        cbar = plt.colorbar(scatter, ticks=range(len(unique_values)), label='Datasets')
+        cbar.ax.set_yticklabels(unique_values)
+        plt.title('t-SNE Visualization of Age Latents by Dataset')
+        plt.xlabel('t-SNE Dimension 1')
+        plt.ylabel('t-SNE Dimension 2')
+
+        file_path = os.path.join(self._out_dir, 'tsne_age_latents_by_dataset.png')
+        plt.savefig(file_path)
+        # self.log['test/tsne_age_latents_by_dataset'].upload(file_path)
+        plt.close()
+
+    ##### STATISTICAL TESTS #####
+
+    def compute_mi(self, latents, factors):
+        """
+        Compute Mutual Information Gap (MIG) - measures the gap between the top two mutual information scores.
+        latents: (N, D) latent representations (e.g., identity latents)
+        factors: (N, K) ground truth factors (e.g., age latents)
+        """
+        
+        mi_matrix = np.zeros((latents.shape[1], factors.shape[1]))
+
+        for i in range(latents.shape[1]): 
+            for j in range(factors.shape[1]):  
+                mi_matrix[i, j] = mutual_info_regression(latents[:, i].reshape(-1, 1), factors[:, j]).mean()
+
+        mi = np.mean(mi_matrix)
+        
+        return mi
+    
+    def compute_dci(self, latents, factors):
+        """
+        Compute DCI (Disentanglement, Completeness, Informativeness) for the entire latent representations.
+        latents: (N, D1) latent representations (e.g., identity latents)
+        factors: (N, D2) ground truth factors (e.g., age latents)
+        Returns:
+            disentanglement: Disentanglement score
+            completeness: Completeness score
+            informativeness: Informativeness score
+        """
+        # Train a regressor to predict the entire factors from the entire latents
+        model = GradientBoostingRegressor()
+        model.fit(latents, factors)
+
+        # Compute feature importances
+        importance_matrix = np.abs(model.feature_importances_).reshape(-1, factors.shape[1])
+
+        # Compute disentanglement
+        disentanglement_scores = 1.0 - scipy.stats.entropy(importance_matrix.T + 1e-10, base=latents.shape[1])
+        disentanglement = np.mean(disentanglement_scores)
+
+        # Compute completeness
+        completeness_scores = 1.0 - scipy.stats.entropy(importance_matrix + 1e-10, base=factors.shape[1])
+        completeness = np.mean(completeness_scores)
+
+        # Compute informativeness (R^2 score)
+        informativeness = model.score(latents, factors)
+
+        return disentanglement, completeness, informativeness
+    
+    def compute_sap(self, latents, factors, continuous_factors=True):
+        """
+        Compute SAP (Separated Attribute Predictability) - measures the difference in prediction error for the top two latent dimensions most predictive of each factor.
+        latents: (N, D) latent representations (e.g., identity latents)
+        factors: (N, K) ground truth factors (e.g., age latents)
+        continuous_factors: Whether the factors are continuous (True) or discrete (False)
+        """
+        sap_scores = []
+        for j in range(factors.shape[1]):  # Iterate over factors
+            errors = []
+            for i in range(latents.shape[1]):  # Iterate over latent dimensions
+                model = LinearRegression() if continuous_factors else GradientBoostingRegressor()
+                model.fit(latents[:, i].reshape(-1, 1), factors[:, j])
+                predictions = model.predict(latents[:, i].reshape(-1, 1))
+                error = mean_squared_error(factors[:, j], predictions)
+                errors.append(error)
+            errors = np.sort(errors)
+            sap_scores.append(errors[1] - errors[0])  # Difference between top two errors
+        return np.mean(sap_scores)
+
+    def compute_beta_vae_score(self, latents, factors):
+        """
+        Compute Beta-VAE Score - measures disentanglement by training a classifier to predict factors from latents.
+        latents: (N, D) latent representations (e.g., identity latents)
+        factors: (N, K) ground truth factors (e.g., age latents)
+        """
+        accuracies = []
+        for j in range(factors.shape[1]):  # Iterate over factors
+            model = LinearRegression()
+            model.fit(latents, factors[:, j])
+            predictions = model.predict(latents)
+            accuracy = mean_squared_error(factors[:, j], predictions)
+            accuracies.append(accuracy)
+        return np.mean(accuracies)
+
+    def stats_tests_correlation_new(self, train_loader, val_loader, test_loader):
+        # import numpy as np
+        # from disentanglement_lib.evaluation.metrics import sap_score, dci
+
+        # Your numpy arrays
+        age_latents = np.random.rand(332, 9)  # Replace with your actual data
+        identity_latents = np.random.rand(332, 45)  # Replace with your actual data
+
+        # SAP Metric
+        sap_results = sap_score.compute_sap(
+            mus_test=identity_latents,  # Learned representations
+            ys=age_latents,             # Ground truth factors
+            continuous_factors=True,     # Set to True if ground truth factors are continuous
+            num_train=300,
+            num_test=32
+        )
+        print("SAP Metric Results:", sap_results)
+
+        # DCI Metric
+        dci_results = dci.compute_dci(
+            mus_test=identity_latents,  # Learned representations
+            ys=age_latents              # Ground truth factors
+        )
+        print("DCI Metric Results:", dci_results)
 
     def stats_tests_correlation(self, train_loader, val_loader, test_loader):
         """
         Perform statistical tests to check if age is disentangled from feature latents.
+
         """
 
-        train_feature_latents, train_age_latents, _, train_age_norm, _ = self.process_data(train_loader, datasets=None, diagonal=True)
-        val_feature_latents, val_age_latents, _, val_age_norm, _ = self.process_data(val_loader, datasets=None, diagonal=True)
-        test_feature_latents, test_age_latents, _, test_age_norm, _ = self.process_data(test_loader, datasets=None, diagonal=True)
+        # process_data outputs: feature_latents, age_latents, gt_ages, gt_ages_norm, data_dataset
+        train_identity_latents, train_age_latents, _, train_gt_age_norm, _ = self.process_data(train_loader, datasets=None, diagonal=True)
+        val_identity_latents, val_age_latents, _, val_gt_age_norm, _ = self.process_data(val_loader, datasets=None, diagonal=True)
+        test_identity_latents, test_age_latents, _, test_gt_age_norm, _ = self.process_data(test_loader, datasets=None, diagonal=True)
 
         # Concatenate the feature latents and age labels from train, val, and test sets
-        shape_latents = np.concatenate((train_feature_latents, val_feature_latents, test_feature_latents), axis=0)
-        age_labels = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
-        # age_labels = np.concatenate((train_age_norm, val_age_norm, test_age_norm), axis=0)
+        identity_latents = np.concatenate((train_identity_latents, val_identity_latents, test_identity_latents), axis=0)
+        age_latents = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
+        # gt_age_norms = np.concatenate((train_gt_age_norm, val_gt_age_norm, test_gt_age_norm), axis=0)
+
+        ####### DISENTANGLEMENT_LIB #######
+
+        
+
+        # # Import gin and disentanglement_lib utilities
+        # import gin
+        # import disentanglement_lib.evaluation.metrics.utils as disentanglement_utils
+
+        # # Register make_discretizer as an external configurable
+        # gin.external_configurable(disentanglement_utils.make_discretizer, module='disentanglement_lib.utils')
+
+        # # Set gin configuration for MIG
+        # gin.bind_parameter('discretizer.num_bins', 10)
+        # gin.bind_parameter('discretizer.discretizer_fn', disentanglement_utils.make_discretizer)
+
+        # # === STEP 1: Debugging Latent Shapes ===
+        # print("Identity latents shape:", identity_latents.shape)
+        # print("Age latents shape:", age_latents.shape)
+
+        # # === STEP 2: Dataset Wrapper ===
+        # class SimpleDataset:
+        #     def __init__(self, factors):
+        #         self.factors = factors
+        #         self.num_samples = self.factors.shape[0]
+
+        #     def sample(self, num_samples, random_state):
+        #         # Ensure we don't sample more than the available data
+        #         if num_samples > self.num_samples:
+        #             num_samples = self.num_samples
+        #         idx = random_state.choice(self.num_samples, num_samples, replace=False)
+        #         obs = idx[:, None]  # obs contains sample indices
+        #         print("Sampled indices:", idx)  # Debugging
+        #         print("Sampled factors shape:", self.factors[idx].shape)  # Debugging
+        #         return obs, self.factors[idx]
+
+        # # Create datasets for age and identity factors
+        # identity_factors_dataset = SimpleDataset(identity_latents)
+        # age_factors_dataset = SimpleDataset(age_latents)
+
+        # # === STEP 3: Representation Function ===
+        # def make_repr_fn(latents, name=""):
+        #     def fn(obs):
+        #         indices = obs[:, 0].astype(int)
+        #         rep = latents[indices]
+        #         print(f"[{name}] Representation shape: {rep.shape}")  # Debugging
+        #         return rep
+        #     return fn
+
+        # # Create representation functions
+        # identity_repr_fn = make_repr_fn(identity_latents, name="identity")
+        # age_repr_fn = make_repr_fn(age_latents, name="age")
+
+        # # === STEP 4: Compute Metrics ===
+        # random_state = np.random.RandomState(0)
+        # num_samples = identity_latents.shape[0]
+        # num_train = int(num_samples * 0.8)
+        # num_test = num_samples - num_train
+
+        # results = {}
+
+        # print("Debugging MIG Inputs:")
+        # print("Age factors dataset shape:", age_factors_dataset.factors.shape)
+        # print("Number of training samples:", num_train)
+        # print("Random state:", random_state)
+
+        # # --- Age info in Identity latents ---
+        # results["mig_identity_age"] = mig.compute_mig(
+        #     age_factors_dataset, identity_repr_fn, random_state, num_train=num_train
+        # )['discrete_mig']
+        # results["dci_identity_age"] = dci.compute_dci(
+        #     age_factors_dataset, identity_repr_fn, random_state, num_train=num_train, num_test=num_test
+        # )['disentanglement']
+        # results["sap_identity_age"] = sap_score.compute_sap(
+        #     age_factors_dataset, identity_repr_fn, random_state, num_train=num_train, num_test=num_test
+        # )['SAP_score']
+        # results["beta_identity_age"] = beta_vae.compute_beta_vae_sklearn(
+        #     age_factors_dataset, identity_repr_fn, random_state, num_train=num_train, num_eval=num_test
+        # )['eval_accuracy']
+
+        # # --- Identity info in Age latents ---
+        # results["mig_age_identity"] = mig.compute_mig(
+        #     identity_factors_dataset, age_repr_fn, random_state, num_train=num_train
+        # )['discrete_mig']
+        # results["dci_age_identity"] = dci.compute_dci(
+        #     identity_factors_dataset, age_repr_fn, random_state, num_train=num_train, num_test=num_test
+        # )['disentanglement']
+        # results["sap_age_identity"] = sap_score.compute_sap(
+        #     identity_factors_dataset, age_repr_fn, random_state, num_train=num_train, num_test=num_test
+        # )['SAP_score']
+        # results["beta_age_identity"] = beta_vae.compute_beta_vae_sklearn(
+        #     identity_factors_dataset, age_repr_fn, random_state, num_train=num_train, num_eval=num_test
+        # )['eval_accuracy']
+
+        # # === STEP 5: Print Results ===
+        # for k, v in results.items():
+        #     print(f"{k}: {v:.4f}")
+
+        # # Log results
+        # for k, v in results.items():
+        #     self.log[f'test/{k}'] = v
+
+        # ####### NEW IMPLEMENTATION #######
+
+        # # age_min, age_max = map(int, self._config['data']['dataset_age_range'].split('-'))
+
+        # # # Test 1: Age Information in Identity Latents
+        # # print("Running Test 1: Age Information in Identity Latents")
+        # # mig_score = self.compute_mi(identity_latents, age_latents)
+        # # print("MIG Score (Age in Identity):", mig_score)
+
+        # # dci_scores_dis, dci_scores_comp, dci_scores_info = self.compute_dci(identity_latents, age_latents)
+        # # print("DCI Scores Disentanglement (Age in Identity):", dci_scores_dis)
+        # # print("DCI Scores Completeness (Age in Identity):", dci_scores_comp)
+        # # print("DCI Scores Informativeness (Age in Identity):", dci_scores_info)
+
+        # sap_score = self.compute_sap(identity_latents, age_latents, continuous_factors=True)
+        # print("SAP Score (Age in Identity):", sap_score)
+
+        # beta_vae_score = self.compute_beta_vae_score(identity_latents, age_latents)
+        # print("Beta-VAE Score (Age in Identity):", beta_vae_score)
+
+        # # self.log['test/mig_score_age_in_identity'] = str(mig_score)
+        # # self.log['test/dci_score_age_in_identity'] = str(dci_scores)
+        # # self.log['test/sap_score_age_in_identity'] = str(sap_score)
+        # # self.log['test/beta_vae_score_age_in_identity'] = str(beta_vae_score)
+
+        # # Test 2: Identity Information in Age Latents
+        # print("Running Test 2: Identity Information in Age Latents")
+        # mig_score = self.compute_mi(age_latents, identity_latents)
+        # # dci_scores_dis, dci_scores_comp, dci_scores_info = self.compute_dci(age_latents, identity_latents)
+        # sap_score = self.compute_sap(age_latents, identity_latents, continuous_factors=True)
+        # beta_vae_score = self.compute_beta_vae_score(age_latents, identity_latents)
+
+        # print("MIG Score (Identity in Age):", mig_score)
+        # # print("DCI Scores Disentanglement (Identity in Age):", dci_scores_dis)
+        # # print("DCI Scores Completeness (Age in Identity):", dci_scores_comp)
+        # # print("DCI Scores Informativeness (Age in Identity):", dci_scores_info)
+        # print("SAP Score (Identity in Age):", sap_score)
+        # print("Beta-VAE Score (Identity in Age):", beta_vae_score)
+
+        # # self.log['test/mig_score_identity_in_age'] = str(mig_score)
+        # # self.log['test/dci_score_identity_in_age'] = str(dci_scores)
+        # # self.log['test/sap_score_identity_in_age'] = str(sap_score)
+        # # self.log['test/beta_vae_score_identity_in_age'] = str(beta_vae_score)
+
+
+        ####### OLD IMPLEMENTATION #######
 
         if self._config['data']['swap_features']:
             latents_per_feature = (self._manager.model_latent_size - self._config['model']['age_latent_size']) // len(self._manager.latent_regions)
-            num_groups = shape_latents.shape[1] // latents_per_feature  # should give 9 groups
+            num_groups = identity_latents.shape[1] // latents_per_feature  # should give 9 groups
 
         age_latents_size = self._config['model']['age_latent_size']
 
         if age_latents_size == 1:
 
-            sap_score = sap(factors=age_labels, codes=shape_latents, continuous_factors=True, nb_bins=10, regression=True)
+            sap_score = sap(factors=age_latents, codes=identity_latents, continuous_factors=True, nb_bins=10, regression=True)
 
             # Mutual Information (all feature latents vs single age latent)
-            mi_all_all = mutual_info_regression(shape_latents, age_labels.ravel())
+            mi_all_all = mutual_info_regression(identity_latents, age_latents.ravel())
 
             if self._config['data']['swap_features']:
         
                 # Mutual Information (each subset of feature latents vs single age latent)
                 mi_subsets_single_age = []
                 for i in range(num_groups):
-                    mi = mutual_info_regression(shape_latents[:, i*latents_per_feature:(i+1)*latents_per_feature], age_labels.ravel())
+                    mi = mutual_info_regression(identity_latents[:, i*latents_per_feature:(i+1)*latents_per_feature], age_latents.ravel())
                     mi_subsets_single_age.append(mi)
                 
                 # Mutual Information (each feature latent vs single age latent)
                 mi_each_feature_single_age = []
-                for i in range(shape_latents.shape[1]):
-                    mi = mutual_info_regression(shape_latents[:, i].reshape(-1, 1), age_labels.ravel())
+                for i in range(identity_latents.shape[1]):
+                    mi = mutual_info_regression(identity_latents[:, i].reshape(-1, 1), age_latents.ravel())
                     mi_each_feature_single_age.append(mi)
             
         else:
 
-            sap_score = sap(factors=age_labels, codes=shape_latents, continuous_factors=True, nb_bins=10, regression=True)
+            sap_score = sap(factors=age_latents, codes=identity_latents, continuous_factors=True, nb_bins=10, regression=True)
 
             # Mutual Information (all feature latents vs all age latents) 
             # compute the MI for each pair of shape latent and age latent.
-            mi_matrix = np.zeros((shape_latents.shape[1], age_labels.shape[1]))
+            mi_matrix = np.zeros((identity_latents.shape[1], age_latents.shape[1]))
 
-            for i in range(shape_latents.shape[1]): 
-                for j in range(age_labels.shape[1]):  
-                    mi_matrix[i, j] = mutual_info_regression(shape_latents[:, i].reshape(-1, 1), age_labels[:, j]).mean()
+            for i in range(identity_latents.shape[1]): 
+                for j in range(age_latents.shape[1]):  
+                    mi_matrix[i, j] = mutual_info_regression(identity_latents[:, i].reshape(-1, 1), age_latents[:, j]).mean()
 
             mi_all_all = np.mean(mi_matrix)
 
@@ -1798,7 +2085,7 @@ class Tester:
                 # Mutual Information (each subset of feature latents vs each single age latent)
                 mi_subsets_each_age = []
                 for i in range(num_groups):
-                    mi = mutual_info_regression(shape_latents[:, i*latents_per_feature:(i+1)*latents_per_feature], age_labels[:, i]).mean()
+                    mi = mutual_info_regression(identity_latents[:, i*latents_per_feature:(i+1)*latents_per_feature], age_latents[:, i]).mean()
                     mi_subsets_each_age.append(mi)
                 mi_subsets_each_age_mean = np.array(mi_subsets_each_age).mean()
                 mi_subsets_each_age = [[mi_subsets_each_age_mean], mi_subsets_each_age]
@@ -1807,11 +2094,11 @@ class Tester:
                 mi_each_feature_each_age = []
                 for i in range(num_groups):
                     for j in range(latents_per_feature):
-                        mi = mutual_info_regression(shape_latents[:, i*latents_per_feature + j].reshape(-1, 1), age_labels[:, i])
+                        mi = mutual_info_regression(identity_latents[:, i*latents_per_feature + j].reshape(-1, 1), age_latents[:, i])
                         mi_each_feature_each_age.append(mi[0])
                 mi_each_feature_each_age_mean = np.array(mi_each_feature_each_age).mean()
                 mi_each_feature_each_age = [[mi_each_feature_each_age_mean], mi_each_feature_each_age]
-            
+
         # All values desired to be low
         print("- SAP Score:")
         print(sap_score)
@@ -1826,7 +2113,8 @@ class Tester:
             self.log['test/mi_subsets_each_age'] = str(mi_subsets_each_age)
             self.log['test/mi_each_feature_each_age'] = str(mi_each_feature_each_age)
 
-            
+
+
     def proportions(self, data_loader):
         """
         This function takes the first batch from the input data, passes them through the encoder,
@@ -1963,6 +2251,183 @@ class Tester:
             plot_proportions([df1, df2, df3], proportion, output_directory, mse)
             self.log[f'test/mse_proportion_{proportion}'].log(mse)
 
+
+    def relatives_aging_diff(self):
+
+        # Read the CSV file
+        relatives_metadata = pd.read_csv('preprocessing_data/relatives_metadata.csv', usecols=['name', 'id', 'age', 'gender'])
+
+        if 'combined' in self._config['data']['dataset_type']:
+            dataset_type = 'combined'
+        else:
+            dataset_type = "not_combined"
+
+        # Get all mesh files in the specified folder
+        mesh_files = glob(f"/raid/compass/athena/data/relatives/{dataset_type}/*.obj")
+
+        # Group by unique 'name'
+        grouped = relatives_metadata.groupby('name')
+
+        age_norm_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
+        try:
+            with open(age_norm_path, 'rb') as file:
+                age_mean, age_std = \
+                    pickle.load(file)
+        except FileNotFoundError:
+            print("Could not find normalise stats file")
+
+        # Generate difference maps and save images
+        output_dir = os.path.join(self._out_dir, 'relatives_aging')
+        os.makedirs(output_dir, exist_ok=True)
+
+        for name, group in grouped:
+
+            # if name != 'livia':
+            #     continue
+
+            original_rendering = []
+            aged_rendering = []
+            difference_rendering = []
+
+            # Get all mesh files that match the 'id' in the group
+            matching_files = [f for f in mesh_files if any(str(id) in f for id in group['id'])]
+
+            if len(matching_files) < 2:
+                continue
+
+            # Sort the group by age to get the youngest
+            group = group.sort_values(by='age')
+            youngest = group.iloc[0]
+            others = group.iloc[1:]
+
+            # Load the youngest mesh
+            youngest_mesh_path = [f for f in matching_files if str(youngest['id']) in f][0]
+            youngest_mesh = trimesh.load_mesh(youngest_mesh_path, 'obj', process=False)
+            youngest_verts = torch.tensor(youngest_mesh.vertices, dtype=torch.float, requires_grad=False, device=self._device)
+            youngest_verts_rend = self._manager.render(youngest_verts.unsqueeze(0)).cpu()
+            original_rendering.append(youngest_verts_rend)
+
+            if self._normalized_data:
+                youngest_verts = (youngest_verts - self._norm_dict['mean'].to(self._device)) / self._norm_dict['std'].to(self._device)
+
+            z = self._manager.encode(youngest_verts.unsqueeze(0).to(self._device)).detach()
+            youngest_verts = self._manager.generate(z.to(self._device))
+
+            if self._normalized_data:
+                youngest_verts = self._unnormalize_verts(youngest_verts)
+            youngest_rendering = self._manager.render(youngest_verts).cpu()
+            aged_rendering.append(youngest_rendering)
+
+            differences = self._manager.compute_vertex_errors(youngest_verts, youngest_verts)
+            difference_render = self._manager.render(youngest_verts, differences, error_max_scale=5).cpu().detach()
+            difference_rendering.append(difference_render)
+
+            for _, row in others.iterrows():
+                age_latent_value = (row['age'] - age_mean) / age_std
+                z_copy = z.clone()
+                z_copy[:, -self._config['model']['age_latent_size']:] = age_latent_value
+
+                aged_verts = self._manager.generate(z_copy.to(self._device))
+                if self._normalized_data:
+                    aged_verts = self._unnormalize_verts(aged_verts)
+                aged_render = self._manager.render(aged_verts).cpu()
+                aged_rendering.append(aged_render)
+
+                original_id = row['id']
+                original_mesh_path = [f for f in matching_files if str(original_id) in f][0]
+                original_mesh = trimesh.load_mesh(original_mesh_path, 'obj', process=False)
+                original_verts = torch.tensor(original_mesh.vertices, dtype=torch.float, requires_grad=False, device=self._device)
+
+                if self._normalized_data:
+                    original_verts = (original_verts - self._norm_dict['mean'].to(self._device)) / self._norm_dict['std'].to(self._device)
+
+                differences = self._manager.compute_vertex_errors(aged_verts, youngest_verts)
+                difference_render = self._manager.render(aged_verts, differences, error_max_scale=5).cpu().detach()
+                difference_rendering.append(difference_render)
+
+                # Render the original meshes
+                if self._normalized_data:
+                    original_verts = self._unnormalize_verts(original_verts) #.unsqueeze(0)).squeeze(0)  
+                original_render = self._manager.render(original_verts.unsqueeze(0)).cpu()
+                original_rendering.append(original_render)
+
+            max_batch_size = len(original_rendering)
+
+            # # Function to pad a list of tensors to the desired batch size
+            # def pad_tensors(tensor_list, max_batch_size, tensor_shape):
+            #     padded_list = [torch.zeros(tensor_shape, dtype=torch.float)] + tensor_list
+            #     while len(padded_list) < max_batch_size:
+            #         padded_list.append(torch.zeros(tensor_shape, dtype=torch.float))
+            #     return padded_list
+
+            # # Pad the lists to the maximum batch size
+            # tensor_shape = original_rendering[0].shape  # Assuming all tensors have the same shape
+            # aged_rendering_padded = pad_tensors(aged_rendering, max_batch_size, tensor_shape)
+            # difference_rendering_padded = pad_tensors(difference_rendering, max_batch_size, tensor_shape)
+
+            # Concatenate the lists of tensors along the batch dimension (dim=0)
+            original_rendering_tensor = torch.cat(original_rendering, dim=0)
+            aged_rendering_tensor = torch.cat(aged_rendering, dim=0)
+            difference_rendering_tensor = torch.cat(difference_rendering, dim=0)
+
+            # Create a grid with the original meshes, aged meshes, and difference maps stacked on top of each other
+            grid = make_grid(torch.cat([original_rendering_tensor, aged_rendering_tensor, difference_rendering_tensor], dim=0), padding=10, pad_value=1, nrow=max_batch_size)
+            file_path = os.path.join(output_dir, f'{name}_difference.png')
+            save_image(grid, file_path)
+            self.log[f'test/{name}_difference'].upload(file_path)
+            
+    def relatives_aging(self):
+        if 'combined' in self._config['data']['dataset_type']:
+            dataset_type = 'combined'
+        else:
+            dataset_type = "not_combined"
+    
+        relatives_dir = f'/raid/compass/athena/data/relatives/{dataset_type}/'
+        output_dir = os.path.join(self._out_dir, 'relatives_aging')
+        os.makedirs(output_dir, exist_ok=True)
+
+        mesh_files = [f for f in os.listdir(relatives_dir) if f.endswith('_1.obj')]
+
+        for mesh_file in tqdm.tqdm(mesh_files):
+            print(mesh_file)
+            mesh_path = os.path.join(relatives_dir, mesh_file)
+            mesh = trimesh.load_mesh(mesh_path, 'obj', process=False)
+            mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float, requires_grad=False, device=self._device)
+
+            if self._normalized_data:
+                mesh_verts = (mesh_verts - self._norm_dict['mean'].to(self._device)) / self._norm_dict['std'].to(self._device)
+
+            z = self._manager.encode(mesh_verts.unsqueeze(0).to(self._device)).detach()
+
+            age_latent_size = self._config['model']['age_latent_size']
+            z_mins = self.latent_stats['mins'][-age_latent_size:]
+            z_maxs = self.latent_stats['maxs'][-age_latent_size:]
+            n_steps = 17
+            z_traversal = torch.stack([torch.linspace(z_min, z_max, n_steps) for z_min, z_max in zip(z_mins, z_maxs)], dim=1).to(self._device)
+
+            all_frames = []
+            for i in range(n_steps):
+                z_copy = z.clone()
+                z_copy[:, -age_latent_size:] = z_traversal[i]
+
+                gen_verts = self._manager.generate(z_copy.to(self._device))
+
+                if self._normalized_data:
+                    gen_verts = self._unnormalize_verts(gen_verts)
+
+                renderings = self._manager.render(gen_verts).detach().cpu()
+                differences = self._manager.compute_vertex_errors(gen_verts, gen_verts[0].expand(gen_verts.shape[0], -1, -1))
+                difference_renderings = self._manager.render(gen_verts, differences, error_max_scale=0.01).cpu().detach()
+
+                combined_renderings = torch.cat([renderings, difference_renderings], dim=-1)
+                all_frames.append(combined_renderings)
+
+            file_path = os.path.join(output_dir, f'{mesh_file[:-4]}_aging.mp4')
+            name = mesh_file.split('_')[1]
+            file_path = os.path.join(output_dir, f'{name}_aging.mp4')
+            write_video(file_path, torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
+            # self.log[f'test/{mesh_file[:-4]}_aging.mp4'].upload(file_path)
+
     @staticmethod
     def vector_linspace(start, finish, steps):
         ls = []
@@ -1977,6 +2442,8 @@ if __name__ == '__main__':
     import utils
     from data_generation_and_loading import get_data_loaders
     from model_manager import ModelManager
+    import pandas as pd
+    from glob import glob
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--id', type=str, default='none',

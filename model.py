@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_scatter import scatter_add
 
+from utils import age_per_feature_new_ages, modify_age_latent_based_on_gt
+
 class SpiralConv(nn.Module):
     def __init__(self, in_channels, out_channels, indices, dim=1):
         super(SpiralConv, self).__init__()
@@ -95,8 +97,8 @@ class SpiralDeblock(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, latent_size, age_latent_size, inter_layer_count, inter_layer_size,
-                 spiral_indices, down_transform, up_transform, diagonal_idx, 
-                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False):
+                 spiral_indices, down_transform, up_transform, diagonal_idx, batch_size, latent_regions, precomputed_storage_path, data_type,
+                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False, conditional=False, cycle_consistency=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -110,9 +112,16 @@ class Model(nn.Module):
         self.age_disentanglement = age_disentanglement
         self.swap_feature = swap_feature
         self.diagonal_idx = diagonal_idx
+        self.batch_size = batch_size
+        self.latent_regions = latent_regions
         self.inter_layer = inter_layer
         self.inter_layer_count = inter_layer_count
         self.inter_layer_size = inter_layer_size
+        self.conditional = conditional
+        self.cycle_consistency = cycle_consistency
+        self.precomputed_storage_path = precomputed_storage_path
+        self._data_type = data_type
+        
 
         # encoder
         self.en_layers = nn.ModuleList()
@@ -306,8 +315,8 @@ class Model(nn.Module):
             
         return z
 
-    def forward(self, data):
-
+    def forward(self, data, age, age_norm, swapped):
+        
         if hasattr(data, 'x') == True:
             data = data.x
         
@@ -316,9 +325,77 @@ class Model(nn.Module):
             z = self._reparameterize(mu, logvar, self.age_latent_size, self.age_disentanglement)
         else:
             z = mu
+
+        # conditional on GT age
+        if self.conditional:
+
+            latent_size = self.latent_size
+            age_latent_size = self.age_latent_size
+            latent_regions = self.latent_regions
+            bs = self.batch_size
+
+            age_per_feature = age_per_feature_new_ages(z, age_norm, swapped, latent_size, age_latent_size, latent_regions, bs)
+
+            z[:, -age_latent_size:] = age_per_feature
     
         out = self.decode(z)
         return out, z, mu, logvar
+    
+    ###############
+
+    
+    # def forward(self, data, age, age_norm, swapped):
+    #     assert self.age_disentanglement == True
+    #     assert self.cycle_consistency == True
+    #     assert self.conditional == False
+        
+    #     if hasattr(data, 'x') == True:
+    #         data = data.x
+
+        
+    #     #### CYCLE 1 ####
+        
+    #     mu_1, logvar_1 = self.encode(data)
+    #     if self.is_vae and self.training:
+    #         z_1 = self._reparameterize(mu_1, logvar_1, self.age_latent_size, self.age_disentanglement)
+    #     else:
+    #         z_1 = mu_1
+
+    #     # change age latent
+    #     original_age_latents = z_1[:, -self.age_latent_size:]
+
+    #     precomputed_storage_path = self.precomputed_storage_path, f'normalise_age_{self._data_type}.pkl'
+    #     new_age = modify_age_latent_based_on_gt(precomputed_storage_path, age, min_delta=5.0, max_age=17.0)
+
+    #     # create 16,9 new age latents
+    #     age_per_feature = age_per_feature_new_ages(z_1, new_age, swapped, self.latent_size, self.age_latent_size, self.latent_regions, self.batch_size)
+
+    #     # replace z_age with new z_age_modified
+    #     z_1[:, -self.age_latent_size:] = age_per_feature
+    
+    #     # decode
+    #     out_1 = self.decode(z_1)
+
+    #     #### CYCLE 2 ####
+
+    #     # encode
+    #     mu_2, logvar_2 = self.encode(out_1)
+
+    #     # reparameterize
+    #     if self.is_vae and self.training:
+    #         z_2 = self._reparameterize(mu_2, logvar_2, self.age_latent_size, self.age_disentanglement)
+    #     else:
+    #         z_2 = mu_2
+
+    #     # change age latents back to original
+    #     z_2[:, -self.age_latent_size:] = original_age_latents
+
+    #     # decode 
+    #     out_2 = self.decode(z_2)
+
+    #     return out_1, z_1, mu_1, logvar_1, out_2, z_2, mu_2, logvar_2, new_age
+    
+    ###############
 
     @staticmethod
     def _reparameterize(mu, logvar, age_latent_size, age_disentanglement=False):
@@ -340,8 +417,8 @@ class Model(nn.Module):
 class AgeVAEDiscriminator(nn.Module):
     def __init__(self, discriminator_type, input_dim, in_channels, out_channels, spiral_indices, down_transform):
         self.discriminator_type = discriminator_type
+        super(AgeVAEDiscriminator, self).__init__()
         if discriminator_type == "MLP":
-            super(AgeVAEDiscriminator, self).__init__()
             self.model = nn.Sequential(
             nn.Linear(input_dim, 512),
             nn.LeakyReLU(0.2),
@@ -349,8 +426,18 @@ class AgeVAEDiscriminator(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Linear(256, 1),
             nn.Sigmoid())
+        elif discriminator_type == "latent":
+            self.model = nn.Sequential(
+            nn.Linear(input_dim, 128), 
+            nn.LeakyReLU(0.2),
+            nn.Linear(128, 64), 
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 32),  
+            nn.LeakyReLU(0.2),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
         else:
-            super(AgeVAEDiscriminator, self).__init__()
             self.dis_layers = nn.ModuleList()
             self.spiral_indices = spiral_indices
             self.down_tranform = down_transform
@@ -370,7 +457,7 @@ class AgeVAEDiscriminator(nn.Module):
                 nn.Linear(self.num_vert * out_channels[-1], 1))
     
     def forward(self, x):
-        if self.discriminator_type == "MLP":
+        if self.discriminator_type in ["MLP", "latent"]:
             return self.model(x)
         else: 
             for layer in self.dis_layers:
@@ -385,43 +472,6 @@ class AgeVAEDiscriminator(nn.Module):
             output = torch.sigmoid(output)
 
             return output
-
-##### SAME AS ENCODER ARCHECTURE BUT WITH A LINEAR LAYER AT THE END TO GET A SINGLE OUTPUT #####
-
-    # def __init__(self, in_channels, out_channels, spiral_indices, down_transform):
-    #     super(AgeVAEDiscriminator, self).__init__()
-    #     self.dis_layers = nn.ModuleList()
-    #     self.spiral_indices = spiral_indices
-    #     self.down_tranform = down_transform
-    #     self.num_vert = down_transform[-1].size(0)
-
-    #     for idx in range(len(out_channels)):
-    #         if idx == 0:
-    #             self.dis_layers.append(
-    #                 SpiralEnblock(in_channels, out_channels[idx],
-    #                               self.spiral_indices[idx]))
-    #         else:
-    #             self.dis_layers.append(
-    #                 SpiralEnblock(out_channels[idx - 1], out_channels[idx],
-    #                               self.spiral_indices[idx]))
-                
-    #     self.dis_layers.append(
-    #         nn.Linear(self.num_vert * out_channels[-1], 1))
-        
-    # def forward(self, x):
-    #     for layer in self.dis_layers:
-    #         layer.to(x.device)
-
-    #     for i, layer in enumerate(self.dis_layers):
-    #         if i < len(self.dis_layers) - 1:
-    #             x = layer(x, self.down_tranform[i])
-
-    #     x = x.view(-1, self.dis_layers[-1].weight.size(1))
-    #     output = self.dis_layers[-1](x)
-    #     output = torch.sigmoid(output)
-
-    #     return output
-
 
 class FactorVAEDiscriminator(nn.Module):
     def __init__(self, latent_dim=10):

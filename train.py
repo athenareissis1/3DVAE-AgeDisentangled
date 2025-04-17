@@ -58,8 +58,8 @@ if config['model']['age_disentanglement']:
 
     if config['model']['age_per_feature'] == True:
         no_remainder = config['model']['latent_size'] % config['model']['age_latent_size'] == 0
-        correct_value = config['model']['latent_size'] // config['model']['age_latent_size'] == 5
-        assert no_remainder and correct_value
+        # correct_value = config['model']['latent_size'] // config['model']['age_latent_size'] == 5
+        assert no_remainder #and correct_value
         
     config['model']['latent_size'] += config['model']['age_latent_size']
 
