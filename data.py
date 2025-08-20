@@ -17,7 +17,7 @@ import torch
 import pymeshlab as ml
 
 
-def delete_vertices(mesh_file, vertex_indices_to_remove):
+def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove):
     """
     Opens a mesh file, deletes vertices based on the given indices, and saves the modified mesh.
 
@@ -36,12 +36,12 @@ def delete_vertices(mesh_file, vertex_indices_to_remove):
 
     # Create a mask for vertices to keep
     keep_mask = np.ones(len(mesh.vertices), dtype=bool)
-    keep_mask[vertex_indices_to_remove] = False
-    # try:
-    #     keep_mask[vertex_indices_to_remove] = False
-    # except IndexError:
-    #     print(f"{mesh_file}: Some vertex indices are out of bounds. Skipping this mesh.")
-    #     return
+    # keep_mask[vertex_indices_to_remove] = False
+    try:
+        keep_mask[vertex_indices_to_remove] = False
+    except IndexError:
+        print(f"{mesh_file}: Some vertex indices are out of bounds. Skipping this mesh.")
+        return
 
     # Filter vertices and faces
     new_vertices = mesh.vertices[keep_mask]
@@ -60,19 +60,14 @@ def delete_vertices(mesh_file, vertex_indices_to_remove):
     # Create the new mesh
     modified_mesh = trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
 
-    # Ensure the output folder exists
-    os.makedirs("/raid/compass/athena/data/unified_normals_dataset/", exist_ok=True)
-
     # Save the modified mesh
-    # base_name, ext = os.path.splitext(mesh_file)
-    # modified_mesh_file = f"{base_name}{ext}"
     modified_mesh_path = os.path.join("/raid/compass/athena/data/unified_normals_dataset/" + os.path.basename(mesh_file))
     modified_mesh.export(modified_mesh_path)
 
     # print(f"Modified mesh saved to: {modified_mesh_path}")
 
 # Process the first 40 meshes in the specified folder
-def process_meshes_in_folder(folder_path, vertex_indices_to_remove, max_files=12885):
+def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove, max_files=12885):
     """
     Processes the first `max_files` meshes in a folder, removing specified vertices.
 
@@ -89,15 +84,9 @@ def process_meshes_in_folder(folder_path, vertex_indices_to_remove, max_files=12
         if f.endswith(('.ply', '.obj', '.stl'))
     ]
 
-    output_folder = "/raid/compass/athena/data/test_data_modified/"
-
     # Process the first `max_files` meshes
     for i, mesh_file in enumerate(mesh_files[:max_files]):
-        modified_mesh_path = os.path.join(output_folder, os.path.basename(mesh_file))
-        if os.path.exists(modified_mesh_path):
-            # print(f"File already exists: {modified_mesh_path}. Skipping.")
-            continue
-        delete_vertices(mesh_file, vertex_indices_to_remove)
+        delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove)
 
     
 
@@ -121,7 +110,6 @@ def remove_files_with_keyword(directory):
             except Exception as e:
                 print(f"Error removing file {file_path}: {e}")
 
-#####################
 
 def get_xyz_coordinates(mesh, template_faces, triangle_index, u, v):
     """
@@ -358,13 +346,13 @@ def distance_proportion_averages(dataset_type, output_directory):
 
     print(f"Average proportions per age saved to: {output_csv_path}")
 
-def smooth_datasets(folder_path):
+def smooth_mesh(folder_path, dataset, file_name='1216.obj', smooth=1, test=True):
 
-    file_name = '1216.obj'
-    smooth = 1
+    # file_name = '1216.obj'
+    # smooth = 1
 
     # combine folder_path with '1.obj'
-    mesh = folder_path + f'/{file_name}'
+    mesh = folder_path + dataset + f'/{file_name}'
 
     ms = ml.MeshSet()
     ms.load_new_mesh(mesh)
@@ -376,11 +364,50 @@ def smooth_datasets(folder_path):
         selected=False          # Affects entire mesh
     )
 
-    ms.save_current_mesh(f"smooth_tests/{file_name}")
+    if test:
+        ms.save_current_mesh(f"smooth_tests/{file_name}")
+    else:
+        # check if the folder exists, if not create it
+        if not os.path.exists(os.path.join(folder_path, 'smooth_unified_normals_dataset')):
+            os.makedirs(os.path.join(folder_path, 'smooth_unified_normals_dataset'))
+        ms.save_current_mesh(os.path.join(folder_path, 'smooth_unified_normals_dataset', f"{file_name}"))
+
+def smooth_dataset(folder_path, dataset, dataset_type):
+
+    dataset_folder_path = folder_path + dataset
+    mesh_files = [
+        os.path.join(dataset_folder_path, f) for f in os.listdir(dataset_folder_path)
+        if f.endswith(('.ply', '.obj', '.stl'))]
+    
+    if dataset_type == "combined":
+        metadata_path = os.path.join("preprocessing_data", "combined_datasets_ages.csv")
+    else:
+        metadata_path = os.path.join("preprocessing_data", "BABIES_faces_metadata.csv")
+    metadata = pd.read_csv(metadata_path)[['id', 'Dataset']]
+
+    for i, mesh_file in enumerate(mesh_files):
+
+        file_name = os.path.basename(mesh_file)
+        origin = metadata.loc[metadata['id'] == int(file_name.split('.')[0]), 'Dataset'].values[0]
+
+        if origin == 'LYHM':
+            smooth_factor = 2
+        elif origin == 'LSFM':
+            smooth_factor = 1
+        elif origin == 'MimicMe':
+            smooth_factor = 1
+        elif origin == 'FaceScape':
+            smooth_factor = 0
+        elif origin == 'Paeds':
+            smooth_factor = 0
+
+        smooth_mesh(folder_path, dataset, file_name=file_name, smooth=smooth_factor, test=False)
 
 
 # Example usage
 if __name__ == "__main__":
+
+    folder_path = "/raid/compass/athena/data/"
 
     dataset = "unified_normals_dataset"
     dataset_type = "combined"
@@ -396,16 +423,14 @@ if __name__ == "__main__":
     # template_path = None
     # output_directory = "measurements"
 
-    folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
+    # folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
         
     # vertices_to_remove = [6945, 6946, 16087]   # Replace with the indices of vertices to remove
 
-    # process_meshes_in_folder(folder_path, vertices_to_remove, max_files=12885)
+    # delete_vertices_for_all_to_new_folder(folder_path, vertices_to_remove, max_files=12885)
 
-    # delete_vertices("/raid/compass/athena/data/unified_normals_dataset_with_error_trianges/1124.obj", vertices_to_remove)
-
-
-    # folder_path = "/raid/compass/athena/data/"
+    # delete_vertices_for_single_mesh("/raid/compass/athena/data/unified_normals_dataset_with_error_trianges/1124.obj", vertices_to_remove)
+    
     # remove_files_with_keyword(folder_path)
 
     #### RUN
@@ -413,4 +438,5 @@ if __name__ == "__main__":
     # add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory)
     # distance_proportion_averages(dataset_type, output_directory)
 
-    smooth_datasets(folder_path)
+    # smooth_mesh(folder_path, dataset)
+    # smooth_dataset(folder_path, dataset, dataset_type)

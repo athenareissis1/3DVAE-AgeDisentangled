@@ -54,18 +54,19 @@ if opts.generate_data:
     data_generator(config['data']['number_of_meshes'],
                    config['data']['std_pca_latent'], opts.generate_data)
 
-if config['model']['age_disentanglement']:
+if config['model']['age_disentanglement'] or config['model']['age_per_feature']:
 
-    if config['model']['age_per_feature'] == True:
-        no_remainder = config['model']['latent_size'] % config['model']['age_latent_size'] == 0
-        # correct_value = config['model']['latent_size'] // config['model']['age_latent_size'] == 5
-        assert no_remainder #and correct_value
+    no_remainder = config['model']['latent_size'] % config['model']['age_latent_size'] == 0
+    assert no_remainder
         
     config['model']['latent_size'] += config['model']['age_latent_size']
 
+loss_keys = ['reconstruction', 'kl', 'dip', 'factor',
+        'latent_consistency', 'laplacian', 'age', 'contrastive', 'mi', 'latent_similarity', 'adversarial', 'adversarial_latent', 'tc', 'tot']
+
 manager = ModelManager(
     configurations=config, device=device,
-    precomputed_storage_path=config['data']['precomputed_path'])
+    precomputed_storage_path=config['data']['precomputed_path'], loss_keys=loss_keys)
 
 train_loader, validation_loader, test_loader, normalization_dict = \
     get_data_loaders(config, manager.template)
@@ -76,6 +77,8 @@ validation_visualization_batch = next(iter(validation_loader))
 # manager.render_and_show_batch(train_visualization_batch, normalization_dict)
 
 if opts.resume:
+    # for step in range(41, 600):  # use a big upper bound if unsure
+    #     del log["train/age"][step]
     start_epoch = manager.resume(checkpoint_dir)
 else:
     start_epoch = 0

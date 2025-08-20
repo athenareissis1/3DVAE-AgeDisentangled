@@ -1,14 +1,15 @@
 data:
-  template_path: preprocessing_data/faces_colour_template.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
-  precomputed_path: precomputed
-  dataset_type: faces_babies_faces
-  dataset_path: /raid/compass/athena/data/DATA_BABIES_FACES
-  dataset_metadata_path: preprocessing_data/BABIES_faces_metadata.csv
-  # template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
+  # template_path: preprocessing_data/faces_colour_template.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
   # precomputed_path: precomputed
-  # dataset_type: faces_babies_faces_combined 
-  # dataset_path: /raid/compass/athena/data/unified_normals_dataset 
-  # dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
+  # dataset_type: faces_babies_faces
+  # dataset_path: /raid/compass/athena/data/DATA_BABIES_FACES
+  # dataset_metadata_path: preprocessing_data/BABIES_faces_metadata.csv
+  template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
+  precomputed_path: precomputed
+  dataset_type: faces_babies_faces_combined 
+  # dataset_path: /raid/compass/athena/data/unified_normals_dataset
+  dataset_path: /raid/compass/athena/data/smooth_unified_normals_dataset 
+  dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
   dataset_remove: []                                                        # remove specific meshes from the dataset
   dataset_age_range: 0-17                                                      # age range that data set is restricted to seperated by a '-'
   normalize_data: True
@@ -61,7 +62,8 @@ optimization:
   latent_similarity_weight: 0 #1
 
   adversarial_weight: 0 #      
-  adversarial_latent_weight: 5 #1                                     
+  adversarial_latent_weight: 1   
+  tc_weight: 0 #1                                                                # if not 0 then adversarial_latent_weight needs to be 0              
 
 model:
   sampling:

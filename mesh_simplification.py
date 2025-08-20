@@ -14,9 +14,10 @@ import utils
 
 
 class MeshSimplifier:
-    def __init__(self, in_mesh_path=None, in_mesh=None, debug=False):
+    def __init__(self, in_mesh_path=None, in_mesh=None, data_type=None, debug=False):
+        self._data_type = data_type
         if in_mesh_path:
-            self._in_mesh = utils.load_template(in_mesh_path)
+            self._in_mesh = utils.load_template(in_mesh_path, data_type)
         elif in_mesh:
             self._in_mesh = in_mesh
         else:
@@ -66,7 +67,7 @@ class MeshSimplifier:
             faces, self._in_mesh.num_nodes)
         new_mesh = self._get_sampled_mesh(downsampling_matrix, new_faces)
         new_mesh.feat_and_cont = \
-            utils.extract_feature_and_contour_from_colour(new_mesh)
+            utils.extract_feature_and_contour_from_colour(new_mesh, self._data_type)
         return new_mesh, downsampling_matrix
 
     def _quadric_edge_collapse(self, edges, desired_verts_number,

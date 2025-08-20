@@ -27,9 +27,9 @@ def prepare_sub_folder(output_directory):
     return checkpoint_directory
 
 
-def load_template(mesh_path):
+def load_template(mesh_path, data_type):
     mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
-    feat_and_cont = extract_feature_and_contour_from_colour(mesh)
+    feat_and_cont = extract_feature_and_contour_from_colour(mesh, data_type)
     mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                               requires_grad=False)
     face = torch.from_numpy(mesh.faces).t().to(torch.long).contiguous()
@@ -43,7 +43,7 @@ def load_template(mesh_path):
     return data
 
 
-def extract_feature_and_contour_from_colour(colored):
+def extract_feature_and_contour_from_colour(colored, data_type):
     # assuming that the feature is colored in red and its contour in black
     if isinstance(colored, torch_geometric.data.Data):
         assert hasattr(colored, 'colors')
@@ -84,6 +84,13 @@ def extract_feature_and_contour_from_colour(colored):
                 features[most_common]['contour'].append(idx)
     for e in elem_to_remove:
         features.pop(e, None)
+
+    # reorder features to match the order of the non-combined data
+    if 'combined' in data_type:
+        order = [1, 0, 3, 6, 4, 2, 8, 7, 5]
+        current_keys = list(features.keys())
+        reordered_keys = [current_keys[i] for i in order if i < len(current_keys)]
+        features = {key: features[key] for key in reordered_keys}
 
     # with b map
     # 0=eyes, 1=ears, 2=sides, 3=neck, 4=back, 5=mouth, 6=forehead,

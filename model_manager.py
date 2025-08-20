@@ -49,7 +49,7 @@ class GradientReversalLayer(Function):
 
 class ModelManager(torch.nn.Module):
     def __init__(self, configurations, device, rendering_device=None,
-                 precomputed_storage_path='precomputed'):
+                 precomputed_storage_path='precomputed', loss_keys=None):
         super(ModelManager, self).__init__()
         self._model_params = configurations['model']
         self._optimization_params = configurations['optimization']
@@ -75,12 +75,14 @@ class ModelManager(torch.nn.Module):
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
         self.template = utils.load_template(
-            configurations['data']['template_path'])
+            configurations['data']['template_path'], self._data_type)
 
         low_res_templates, down_transforms, up_transforms = \
             self._precompute_transformations()
         meshes_all_resolutions = [self.template] + low_res_templates
         spirals_indices = self._precompute_spirals(meshes_all_resolutions)
+
+        self._loss_keys = loss_keys
 
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
 
@@ -130,6 +132,7 @@ class ModelManager(torch.nn.Module):
         self._w_latent_similarity = float(self._optimization_params['latent_similarity_weight'])
         self._w_adversarial_loss = float(self._optimization_params['adversarial_weight'])
         self._w_adversarial_latent_loss = float(self._optimization_params['adversarial_latent_weight'])
+        self._w_tc_loss = float(self._optimization_params['tc_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -178,6 +181,10 @@ class ModelManager(torch.nn.Module):
                 weight_decay=self._optimization_params['weight_decay'])
         if self._w_adversarial_latent_loss > 0:
             assert self._adversarial_loss_latent
+        if self._w_tc_loss > 0:
+            assert self._w_adversarial_latent_loss == 0
+            assert self._adversarial_loss_latent
+        if self._adversarial_loss_latent:
             self._net_discriminator_latent = AgeVAEDiscriminator(
                 discriminator_type="latent",
                 # input_dim = self._latent_size-self._age_latent_size,
@@ -203,8 +210,9 @@ class ModelManager(torch.nn.Module):
 
     @property
     def loss_keys(self):
-        return ['reconstruction', 'kl', 'dip', 'factor',
-                'latent_consistency', 'laplacian', 'age', 'contrastive', 'mi', 'latent_similarity', 'adversarial', 'adversarial_latent', 'tot']
+        # return ['reconstruction', 'kl', 'dip', 'factor',
+        #         'latent_consistency', 'laplacian', 'age', 'contrastive', 'mi', 'latent_similarity', 'adversarial', 'adversarial_latent', 'tc', 'tot']
+        return self._loss_keys
     
     @property
     def latent_regions(self):
@@ -243,7 +251,7 @@ class ModelManager(torch.nn.Module):
             down_transforms = []
             up_transforms = []
             for sampling_factor in sampling_params['sampling_factors']:
-                simplifier = MeshSimplifier(in_mesh=m, debug=False)
+                simplifier = MeshSimplifier(in_mesh=m, data_type=self._data_type, debug=False)
                 m, down, up = simplifier(sampling_factor, r_weighted)
                 low_res_templates.append(m)
                 down_transforms.append(down)
@@ -294,9 +302,9 @@ class ModelManager(torch.nn.Module):
     def _compute_latent_regions(self):
 
         region_names = list(self.template.feat_and_cont.keys())
-        latent_size = self._model_params['latent_size'] # not including age latents 
+        latent_size = self._model_params['latent_size'] # including age latents 
 
-        if self._model_params['age_disentanglement'] and self._model_params['age_per_feature'] == False:
+        if self._age_disentanglement or self._age_per_feature:
             latent_size -= self._model_params['age_latent_size']
 
         assert latent_size % len(region_names) == 0
@@ -306,11 +314,13 @@ class ModelManager(torch.nn.Module):
 
     def _gt_age(self, bs, age_latents, gt_age, swapped_feature):
 
+        num_features = len(self._latent_regions)
+
         if self._swap_feature:
-            if self._model_params['age_disentanglement'] and self._model_params['age_per_feature'] == False:
-                latent_per_feature = (self._latent_size - self._age_latent_size) // self._age_latent_size
+            if self._age_disentanglement or self._age_per_feature:
+                latent_per_feature = (self._latent_size - self._age_latent_size) // num_features
             else:
-                latent_per_feature = self._latent_size // self._age_latent_size
+                latent_per_feature = self._latent_size // num_features
             swapped_latent_index = self._latent_regions[swapped_feature][0] // latent_per_feature
             # make a gt_age matrix of size [16,9]
             gt_feature_ages = torch.zeros([bs ** 2, self._age_latent_size],
@@ -451,15 +461,20 @@ class ModelManager(torch.nn.Module):
 
             # not changed for cycle VAE
             if self._adversarial_loss_latent and train:
-                loss_adversarial_latent, discriminator_loss_latent = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age)
+                loss_adversarial_latent, discriminator_loss_latent, loss_tc = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age)
             else:
                 loss_adversarial_latent = torch.tensor(0, device=device)
                 discriminator_loss_latent = torch.tensor(0, device=device)
+                loss_tc = torch.tensor(0, device=device)
 
 ###########################
 
         else:
-            reconstructed, z, mu, logvar = self.forward(data.x, data.age, data.norm_age, data.swapped)
+            if self._swap_feature:
+                swapper = data.swapped
+            else:
+                swapper = np.nan
+            reconstructed, z, mu, logvar = self.forward(data.x, data.age, data.norm_age, swapper)
 
 
             loss_recon = self.compute_mse_loss(reconstructed, data.x)
@@ -506,10 +521,11 @@ class ModelManager(torch.nn.Module):
                 discriminator_loss = torch.tensor(0, device=device)
 
             if self._adversarial_loss_latent and train:
-                loss_adversarial_latent, discriminator_loss_latent = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age)
+                loss_adversarial_latent, discriminator_loss_latent, loss_tc = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age)
             else:
                 loss_adversarial_latent = torch.tensor(0, device=device)
                 discriminator_loss_latent = torch.tensor(0, device=device)
+                loss_tc = torch.tensor(0, device=device)
 
         loss_tot = self._w_reconstruction_weight * loss_recon + \
             self._w_kl_loss * loss_kl + \
@@ -520,8 +536,9 @@ class ModelManager(torch.nn.Module):
             self._w_contrastive_loss * loss_contrastive + \
             self._w_mi_loss * loss_mi + \
             self._w_latent_similarity * loss_latent_similarity + \
-            self._w_adversarial_loss * loss_adversarial +\
-            self._w_adversarial_latent_loss * loss_adversarial_latent
+            self._w_adversarial_loss * loss_adversarial + \
+            self._w_adversarial_latent_loss * loss_adversarial_latent + \
+            self._w_tc_loss * loss_tc
 
         # if train:
         #     if self._adversarial_loss:
@@ -567,6 +584,7 @@ class ModelManager(torch.nn.Module):
                 'adversarial_latent': loss_adversarial_latent.item(),
                 'discriminator': discriminator_loss.item(),
                 'discriminator_latent': discriminator_loss_latent.item(),
+                'tc': loss_tc.item(),
                 'tot': loss_tot.item()}
 
     def _do_factor_vae_iteration(self, data, device='cpu', train=True):
@@ -681,25 +699,28 @@ class ModelManager(torch.nn.Module):
         # latent_region = self._latent_regions_age[swapped_feature]
         latent_region = self._latent_regions[swapped_feature]
 
-        if self._age_disentanglement:
-            #  OLD IMPLEMENTATION - do not include the single age latent in LC loss
-            if self._model_params['age_latent_size'] == 1:
-                z = z[:, :-self._age_latent_size]
-            #  NEW IMPLEMENTATION - include all age latents in LC loss
-            else:
-                index_list = []
-                special_index = self.model_latent_size - self._age_latent_size
+        if self._age_disentanglement or self._age_per_feature:
+            z = z[:, :-self._age_latent_size]
 
-                for i in range(special_index):
-                    index_list.append(i)
-                    if (i + 1) % 5 == 0:
-                        index_list.append(special_index)
-                        special_index += 1
+            # #### WHY WAS I INCLUDING THE AGE LATENT IN THE LC LOSS? ###
+            # #  OLD IMPLEMENTATION - do not include the single age latent in LC loss
+            # if self._model_params['age_latent_size'] == 1:
+            #     z = z[:, :-self._age_latent_size]
+            # #  NEW IMPLEMENTATION - include all age latents in LC loss
+            # else:
+            #     index_list = []
+            #     special_index = self.model_latent_size - self._age_latent_size
 
-                # indexes on new order of latents to have the feature age latents at the end of the feature shape latents
-                index_tensor = torch.tensor(index_list, dtype=torch.long)
+            #     for i in range(special_index):
+            #         index_list.append(i)
+            #         if (i + 1) % 5 == 0:
+            #             index_list.append(special_index)
+            #             special_index += 1
 
-                z = z[:, index_tensor]
+            #     # indexes on new order of latents to have the feature age latents at the end of the feature shape latents
+            #     index_tensor = torch.tensor(index_list, dtype=torch.long)
+
+            #     z = z[:, index_tensor]
 
         z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
         z_else = torch.cat([z[:, :latent_region[0]],
@@ -922,25 +943,6 @@ class ModelManager(torch.nn.Module):
 
     def _compute_and_train_adversarial_loss_latent(self, z, gt_ages):
 
-        """
-
-        Option 1:
-
-        real data = ideneity latnets taken from the prior distribution
-        fake data = identity latnets output of the encoder
-
-        Option 2:
-        
-        real data = latent output of the encoder
-        fake data = ideneity latnets output of the encoder but with the age latents permuted between the minibatch
-
-        Option 3: 
-
-        real data = latent output of the encoder
-        fake data = ideneity latnets output of the encoder but with the age latents changed to one of its respective identity latents values, randomly chosen
-        
-        """
-
         if self._swap_feature:
             z = z[self.batch_diagonal_idx]
         
@@ -951,79 +953,268 @@ class ModelManager(torch.nn.Module):
         real_labels = torch.ones(bs, 1).to(self.device)
         fake_labels = torch.zeros(bs, 1).to(self.device)
 
-        ############# Option 1 #############
+        def derangement(n):
+            while True:
+                perm = torch.randperm(n)
+                if not torch.any(perm == torch.arange(n)):
+                    return perm
         
-        # ##### OLD implementation
-        # gt_ages = gt_ages.view(bs, -1)
-        # z_identity = z_identity.view(bs, -1) 
+        option = 2
+        grl = True
 
-        # ### CHANGE ###
-        # # random noise from standard normal distribution (mean=0, std=1)
-        # z_prior = torch.randn_like(z_identity).to(self.device)  # Real data from prior distribution
+        """
 
-        # ### CHANGE ###
-        # # # random noise from a uniform distribution in range (0,1)
-        # # z_prior = torch.rand_like(z_identity, device=self.device)#*6 - 3
+        Option 1:
+        - real data = ideneity latnets taken from the prior distribution
+        - fake data = identity latnets output of the encoder
 
-        # # Discriminator forward pass
-        # real_output = self._net_discriminator_latent(z_prior)
-        # fake_output = self._net_discriminator_latent(z_identity.detach())
+        Option 2:
+        - real data = latent output of the encoder
+        - fake data = ideneity latnets output of the encoder but with the age latents permuted together between the minibatch
 
-        ############# Option 2 ############# 
+        Option 2.1:
+        INPUT 1:
+        - real = z
+        - fake = z with age latents being permuted together withing mini-batch 
+        INPUT 2:
+        - real = z
+        - fake = z with identity latents being permuted together withing mini-batch 
 
-        # Apply Gradient Reversal Layer to z_identity
-        lambda_grl = 1.0  # Set the strength of the gradient reversal
-        z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+        with TC loss through the encoder and not D loss 
+            
+        Option 2.2:
+        - real = z
+        - fake = z with age latents being permuted together and identity latents being permuted together within mini-batch 
+            
+        Option 3:
+        - real data = latent output of the encoder
+        - fake data = ideneity latnets output of the encoder but with the age latents changed to one of its respective identity latents values, randomly chosen
+        
+        """
 
-        # Randomly permute the age latents within the minibatch, keeping all 9 values together
-        z_permuted = z.clone()
-        permuted_indices = torch.randperm(z_ages.size(0))
-        z_permuted[:, -self._age_latent_size:] = z_ages[permuted_indices]
+        if option == 1:
 
-        # Discriminator forward pass
-        real_output = self._net_discriminator_latent(z_reversed)
-        fake_output = self._net_discriminator_latent(z_permuted)
+            ############# Option 1 #############
 
-        ############# Option 3 ############# 
+            """
+            real data = ideneity latnets taken from the prior distribution
+            fake data = identity latnets output of the encoder
+            """
 
-        # z_reversed = z
+            ## NEEDS FIXING ##
+            
+            ##### OLD implementation
+            gt_ages = gt_ages.view(bs, -1)
+            z_identity = z_identity.view(bs, -1) 
 
-        # # # Apply Gradient Reversal Layer to z_identity
-        # # lambda_grl = 1.0  # Set the strength of the gradient reversal
-        # # z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+            ### CHANGE ###
+            # random noise from standard normal distribution (mean=0, std=1)
+            z_prior = torch.randn_like(z_identity).to(self.device)  # Real data from prior distribution
 
-        # # Randomly permute the age latents to equal one of it respective identntiy latents values in a random order 
-        # z_permuted = z.clone()
+            ### CHANGE ###
+            # # random noise from a uniform distribution in range (0,1)
+            # z_prior = torch.rand_like(z_identity, device=self.device)#*6 - 3
 
-        # # Iterate over each of the 9 age latents
-        # for i in range(self._age_latent_size):
-        #     # Define the range of 5 latent values for the current age latent
-        #     start_idx = i * 5
-        #     end_idx = start_idx + 5
+            # Discriminator forward pass
+            real_output = self._net_discriminator_latent(z_prior)
+            fake_output = self._net_discriminator_latent(z_identity.detach())
 
-        #     # Randomly select one of the 5 latent values for each sample in the batch
-        #     random_indices = torch.randint(start_idx, end_idx, (z.size(0),), device=z.device)
+            d_loss_real = nn.BCELoss()(real_output, real_labels)
+            d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
+            d_loss = d_loss_real + d_loss_fake
 
-        #     # Select one value for each sample in the batch using batch indices
-        #     batch_indices = torch.arange(z.size(0), device=z.device)
-        #     new_age_latents = z[batch_indices, random_indices]
+            ## to plot seperately log here d_loss_real and d_loss_fake
 
-        #     # Replace the i-th age latent with the randomly selected value
-        #     z_permuted[:, -(self._age_latent_size - i)] = new_age_latents
+            g_loss = nn.BCELoss()(fake_output, real_labels)
+            tc_loss = torch.tensor(0, device=self.device)
 
-        # # Discriminator forward pass
-        # real_output = self._net_discriminator_latent(z_reversed)
-        # fake_output = self._net_discriminator_latent(z_permuted)
+        elif option == 2:
+
+            ############# Option 2 ############# 
+
+            """
+            real data = latent output of the encoder
+            fake data = ideneity latnets output of the encoder but with the age latents permuted together between the minibatch
+            """
+
+            if grl:
+                lambda_grl = 1.0
+                z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+            else:
+                z_reversed = z.clone()  
+
+            # Randomly permute the age latents within the minibatch, keeping all 9 values together
+            z_permuted = z.clone()
+            permuted_indices = torch.randperm(z_ages.size(0))
+            z_permuted[:, -self._age_latent_size:] = z_ages[permuted_indices]
+
+            # Discriminator forward pass
+            real_output = self._net_discriminator_latent(z_reversed)
+            fake_output = self._net_discriminator_latent(z_permuted)
+
+            d_loss_real = nn.BCELoss()(real_output, real_labels)
+            d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
+            d_loss = d_loss_real + d_loss_fake
+
+            ## to plot seperately log here d_loss_real and d_loss_fake
+
+            g_loss = nn.BCELoss()(fake_output, real_labels)
+            tc_loss = torch.tensor(0, device=self.device)
+
+        elif option == 2.1:
+
+            ############# Option 2.1 ############# 
+
+            """
+            - INPUT 1:
+            real = z
+            fake = z with age latents being permuted together withing mini-batch 
+            - INPUT 2:
+            real = z
+            fake = z with identity latents being permuted together withing mini-batch 
+            """
+                    
+            if grl:
+                lambda_grl = 1.0
+                z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+            else:
+                z_reversed = z.clone() 
+
+            # AGE
+
+            # Randomly permute the age latents within the minibatch, keeping all 9 values together
+            z_permuted_age = z.clone()
+            permuted_indices_age = derangement(z_ages.size(0))
+            z_permuted_age[:, -self._age_latent_size:] = z_ages[permuted_indices_age]
+
+            # Discriminator forward pass
+            real_output_age = self._net_discriminator_latent(z_reversed)
+            fake_output_age = self._net_discriminator_latent(z_permuted_age)
+
+            d_loss_real_age = nn.BCELoss()(real_output_age, real_labels)
+            d_loss_fake_age = nn.BCELoss()(fake_output_age, fake_labels)
+            d_loss_age = d_loss_real_age + d_loss_fake_age
+
+            g_loss_age = nn.BCELoss()(fake_output_age, real_labels)
+
+            # IDENTITY
+
+            # Randomly permute the age latents within the minibatch, keeping all 9 values together
+            z_permuted_id = z.clone()
+            permuted_indices_id = derangement(z_identity.size(0))
+            id_latent_size = self._latent_size - self._age_latent_size
+            z_permuted_id[:, :id_latent_size] = z_identity[permuted_indices_id]
+
+            # Discriminator forward pass
+            real_output_id = self._net_discriminator_latent(z_reversed)
+            fake_output_id = self._net_discriminator_latent(z_permuted_id)
+
+            d_loss_real_id = nn.BCELoss()(real_output_id, real_labels)
+            d_loss_fake_id = nn.BCELoss()(fake_output_id, fake_labels)
+            d_loss_id = d_loss_real_id + d_loss_fake_id
+
+            g_loss_id = nn.BCELoss()(fake_output_id, real_labels)
+
+            d_loss = d_loss_age + d_loss_id
+            g_loss = g_loss_age + g_loss_id
+            # tc_loss = (real_output_age - fake_output_age).mean() + \
+            #   (real_output_id - fake_output_id).mean()
+            tc_loss = torch.tensor(0, device=self.device)
+
+        elif option == 2.2:
+
+            ############# Option 2.2 ############# 
+
+            """
+            real = z
+            fake = z with age latents being permuted together and identity latents being permuted together within mini-batch 
+            """
+
+            if grl:
+                lambda_grl = 1.0
+                z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+            else:
+                z_reversed = z.clone() 
+
+            # Randomly permute the age latents within the minibatch, keeping all 9 values together
+            z_permuted = z.clone()
+            # permute identity latents
+            permuted_indices_id = derangement(z_identity.size(0))
+            z_permuted[:, :-self._age_latent_size] = z_identity[permuted_indices_id]   
+            # permute age latents
+            while True:
+                permuted_indices_age = derangement(z_ages.size(0))
+                if not torch.equal(permuted_indices_age, permuted_indices_id):
+                    break
+            z_permuted[:, -self._age_latent_size:] = z_ages[permuted_indices_age]
+
+            # Discriminator forward pass
+            real_output = self._net_discriminator_latent(z_reversed)
+            fake_output = self._net_discriminator_latent(z_permuted)
+
+            d_loss_real = nn.BCELoss()(real_output, real_labels)
+            d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
+            d_loss = d_loss_real + d_loss_fake
+
+            ## to plot seperately log here d_loss_real and d_loss_fake
+
+            g_loss = nn.BCELoss()(fake_output, real_labels)
+            tc_loss = torch.tensor(0, device=self.device)
+
+        elif option == 3:
+
+            ############# Option 3 ############# 
+            
+            """
+            real data = latent output of the encoder
+            fake data = ideneity latnets output of the encoder but with the age latents changed to one of its respective identity latents values, randomly chosen
+            """
+
+            if grl:
+                lambda_grl = 1.0
+                z_reversed = GradientReversalLayer.apply(z, lambda_grl)
+            else:
+                z_reversed = z.clone()   
+
+            # Randomly permute the age latents to equal one of it respective identntiy latents values in a random order 
+            z_permuted = z.clone()
+
+            # Iterate over each of the 9 age latents
+            for i in range(self._age_latent_size):
+                # Define the range of 5 latent values for the current age latent
+                start_idx = i * 5
+                end_idx = start_idx + 5
+
+                # Randomly select one of the 5 latent values for each sample in the batch
+                random_indices = torch.randint(start_idx, end_idx, (z.size(0),), device=z.device)
+
+                # Select one value for each sample in the batch using batch indices
+                batch_indices = torch.arange(z.size(0), device=z.device)
+                new_age_latents = z[batch_indices, random_indices]
+
+                # Replace the i-th age latent with the randomly selected value
+                z_permuted[:, -(self._age_latent_size - i)] = new_age_latents
+
+            # Discriminator forward pass
+            real_output = self._net_discriminator_latent(z_reversed)
+            fake_output = self._net_discriminator_latent(z_permuted)
+
+            d_loss_real = nn.BCELoss()(real_output, real_labels)
+            d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
+            d_loss = d_loss_real + d_loss_fake
+
+            ## to plot seperately log here d_loss_real and d_loss_fake
+
+            g_loss = nn.BCELoss()(fake_output, real_labels)
+            tc_loss = torch.tensor(0, device=self.device)
+
+        else:
+
+            raise ValueError("Invalid option for adversarial loss latent computation")
 
         #############  ############# 
-        
-        d_loss_real = nn.BCELoss()(real_output, real_labels)
-        d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
-        d_loss = d_loss_real + d_loss_fake
 
-        g_loss = nn.BCELoss()(fake_output, real_labels)
-
-        return g_loss, d_loss
+        return g_loss, d_loss, tc_loss
 
 
     @staticmethod
@@ -1060,12 +1251,16 @@ class ModelManager(torch.nn.Module):
             loss = loss.item() if torch.is_tensor(loss) else loss
             writer.add_scalar(
                 phase + '/' + str(k), loss, epoch + 1)
-            nept_log[phase + '/' + str(k)].log((loss))
+            nept_log[phase + '/' + str(k)].log(loss)
 
     def log_images(self, in_data, writer, nept_log, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
         gt_meshes = in_data.x.to(self._rend_device)
-        out_meshes = self.forward(in_data.to(self.device), in_data.age, in_data.norm_age, in_data.swapped)[0]
+        if self._swap_feature:
+            swapped = in_data.swapped
+        else:
+            swapped = np.nan
+        out_meshes = self.forward(in_data.to(self.device), in_data.age, in_data.norm_age, swapped)[0]
         out_meshes = out_meshes.to(self._rend_device)
 
         if self._normalized_data:
@@ -1194,7 +1389,7 @@ class ModelManager(torch.nn.Module):
         return epochs
     
     def log_hyperparameters(self, log, config, logging):
-        if config['model']['age_disentanglement']:
+        if self._age_disentanglement or self._age_per_feature:
             latent_size = config['model']['latent_size'] - config['model']['age_latent_size']
         else:
             latent_size = config['model']['latent_size']

@@ -412,37 +412,6 @@ class MeshInMemoryDataset(InMemoryDataset):
                     test_list, val_list = train_test_split(temp_test_list, test_size=0.33, random_state=42)
                 else:
                     test_list, val_list, _, _ = train_test_split(temp_test_list, temp_test_ages, test_size=0.55, stratify=temp_test_ages, random_state=42)
-                    
-
-            # age ordering first 
-            #     age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
-
-            #     fname_age_dict = {}
-
-            #     for i, fname in enumerate(all_file_names):
-            #         file_id = self.file_id(fname)
-            #         if file_id in age_metadata['id'].values:
-            #             # Get the age associated with the file_id 
-            #             age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
-            #             # Add the fname and age to the dictionary
-            #             fname_age_dict[fname] = age
-            #         else:
-            #             all_file_names.remove(fname)
-
-            #     # Sort fname_age_dict by age
-            #     sorted_fname_age_dict = dict(sorted(fname_age_dict.items(), key=lambda item: item[1]))    
-
-            #     # Replace all_file_names with the keys from sorted_fname_age_dict
-            #     all_file_names = list(sorted_fname_age_dict.keys())
-            
-            # train_list, test_list, val_list = [], [], []
-            # for i, fname in enumerate(all_file_names):
-            #     if i % 100 <= 5:
-            #         test_list.append(fname)
-            #     elif i % 100 <= 10:
-            #         val_list.append(fname)
-            #     else:
-            #         train_list.append(fname)
 
 
             data = {'train': train_list, 'test': test_list, 'val': val_list}
@@ -554,7 +523,10 @@ class MeshInMemoryDataset(InMemoryDataset):
                 mesh_name = self.file_id(fname)
                 data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)
             else:
-                data = Data(x=mesh_verts)
+                mesh_age = np.nan
+                mesh_norm_age = np.nan
+                mesh_name = self.file_id(fname)
+                data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)
