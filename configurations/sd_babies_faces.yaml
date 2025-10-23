@@ -51,8 +51,13 @@ optimization:
 
 ### new age related losses
 
-  age_weight: 1                                                                  # if 0, no age loss is used
+  age_weight: 4 #1                                                            
+                                                                
+  age_remove_mlp_weight: 0.1                                                         # if 0, no age remove loss is used (removing age from id latents)
+  age_remove_mlp_grl_weight: 0.5                                                   # if 0, no age prediction loss is used (predicting age from age latents)
   
+  age_recon_weight: 0 #0.05      
+
   contrastive_weight: 0 #1                                                         # if 0, no contrastive loss is used
   contrastive_loss_temp: 100                                                     
   contrastive_loss_threshold: 0.035    
@@ -61,8 +66,12 @@ optimization:
 
   latent_similarity_weight: 0 #1
 
-  adversarial_weight: 0 #      
-  adversarial_latent_weight: 1   
+  adversarial_weight: 0 #  
+  adversarial_lr: 1e-4    
+  adversarial_latent_weight: 0.1
+  adversarial_latent_grl_weight: 0.5                                               # if using GRL for adversarial latent loss
+  adversarial_latent_lr: 1.25e-4
+
   tc_weight: 0 #1                                                                # if not 0 then adversarial_latent_weight needs to be 0              
 
 model:
@@ -80,6 +89,8 @@ model:
   pre_z_sigmoid: False
 
   age_disentanglement: True                                                     # if True, an extra feature is added to the latent vector that represents age & age related losses are added
+  age_remove_loss_mlp: True
+  age_reconstruction_mlp: False #True
   contrastive_loss: False #True                                                        # if True, contrastive loss is used
   mi_loss: False #True
   adversarial_loss: False #True                                                        # if True, adversarial loss is used

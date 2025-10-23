@@ -167,36 +167,69 @@ def get_model_list(dirname, key):
     last_model_name = gen_models[-1]
     return last_model_name
 
-def age_per_feature_new_ages(z, new_ages, swapped_feature, latent_size, age_latent_size, latent_regions, bs):
+# def age_per_feature_new_ages(z, new_ages, swapped_feature, latent_size, age_latent_size, latent_regions, bs):
 
-    latent_per_feature_size = (latent_size - age_latent_size) // len(latent_regions)
+#     latent_per_feature_size = (latent_size - age_latent_size) // len(latent_regions)
 
-    age_latents = z[:, -age_latent_size:]
-    swapped_latent_index = latent_regions[swapped_feature][0] // latent_per_feature_size
+#     age_latents = z[:, -age_latent_size:]
+#     swapped_latent_index = latent_regions[swapped_feature][0] // latent_per_feature_size
 
-    # make a gt_age matrix of size [16,age_latent_size]
-    gt_feature_ages = torch.zeros([bs ** 2, age_latent_size],
-                                    device=age_latents.device,
-                                    dtype=age_latents.dtype)
+#     # make a gt_age matrix of size [16,age_latent_size]
+#     gt_feature_ages = torch.zeros([bs ** 2, age_latent_size],
+#                                     device=age_latents.device,
+#                                     dtype=age_latents.dtype)
 
-    # make new gt_age matrix with swapped feature ages
-    for j in range(bs):
+#     # make new gt_age matrix with swapped feature ages
+#     for j in range(bs):
+#         for i in range(bs):
+#             gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
+#             if i != j:
+#                 gt_feature_ages[i * bs + j, swapped_latent_index-1] = new_ages[j]
+
+#     # # try now for 45 age latets (or x age)
+#     # for j in range(bs):
+#     #     for i in range(bs):
+#     #         # Repeat each new_age value 5 times to fill the corresponding 5 latents
+#     #         gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
+#     #         if i != j:
+#     #             # Update the swapped latent index group (5 latents) with the new_age[j]
+#     #             start_idx = (swapped_latent_index - 1) * 5
+#     #             end_idx = start_idx + 5
+#     #             gt_feature_ages[i * bs + j, start_idx:end_idx] = new_ages[j].repeat(5)
+
+
+#     return gt_feature_ages
+
+
+def gt_age(z, gt_age, swapped_feature, latent_size, age_latent_size, latent_regions, bs, swap_feature, age_disentanglement, age_per_feature):
+
+    num_features = len(latent_regions)
+
+    if swap_feature:
+        if age_disentanglement or age_per_feature:
+            latent_per_feature = (latent_size - age_latent_size) // num_features
+        else:
+            latent_per_feature = latent_size // num_features
+        swapped_latent_index = latent_regions[swapped_feature][0] // latent_per_feature
+        # make a gt_age matrix of size [16,9]
+        gt_feature_ages = torch.zeros([bs ** 2, age_latent_size],
+                device=z.device,
+                dtype=z.dtype)
+
+        # make new gt_age matrix with swapped feature ages
+        for j in range(bs):
+            for i in range(bs):
+                gt_feature_ages[i * bs + j, ::] = gt_age[i, ::]
+                if i != j:
+                    gt_feature_ages[i * bs + j, swapped_latent_index] = gt_age[j]
+            
+    else:
+        gt_age = gt_age.repeat(1, 9)
+        gt_feature_ages = torch.zeros([bs, age_latent_size],
+                                        device=z.device,
+                                        dtype=z.dtype)
         for i in range(bs):
-            gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
-            if i != j:
-                gt_feature_ages[i * bs + j, swapped_latent_index-1] = new_ages[j]
-
-    # # try now for 45 age latets (or x age)
-    # for j in range(bs):
-    #     for i in range(bs):
-    #         # Repeat each new_age value 5 times to fill the corresponding 5 latents
-    #         gt_feature_ages[i * bs + j, ::] = new_ages[i, ::]
-    #         if i != j:
-    #             # Update the swapped latent index group (5 latents) with the new_age[j]
-    #             start_idx = (swapped_latent_index - 1) * 5
-    #             end_idx = start_idx + 5
-    #             gt_feature_ages[i * bs + j, start_idx:end_idx] = new_ages[j].repeat(5)
-
+            gt_feature_ages[i, ::] = gt_age[i, ::]
 
     return gt_feature_ages
 

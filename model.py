@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_scatter import scatter_add
 
-from utils import age_per_feature_new_ages, modify_age_latent_based_on_gt
+from utils import modify_age_latent_based_on_gt, gt_age
 
 class SpiralConv(nn.Module):
     def __init__(self, in_channels, out_channels, indices, dim=1):
@@ -98,12 +98,13 @@ class SpiralDeblock(nn.Module):
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, latent_size, age_latent_size, inter_layer_count, inter_layer_size,
                  spiral_indices, down_transform, up_transform, diagonal_idx, batch_size, latent_regions, precomputed_storage_path, data_type,
-                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False, conditional=False, cycle_consistency=False):
+                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False, conditional=False, cycle_consistency=False, age_per_feature=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.latent_size = latent_size
         self.age_latent_size = age_latent_size
+        self.age_per_feature = age_per_feature
         self.spiral_indices = spiral_indices
         self.down_transform = down_transform
         self.up_transform = up_transform
@@ -334,7 +335,9 @@ class Model(nn.Module):
             latent_regions = self.latent_regions
             bs = self.batch_size
 
-            age_per_feature = age_per_feature_new_ages(z, age_norm, swapped, latent_size, age_latent_size, latent_regions, bs)
+            # age_per_feature = age_per_feature_new_ages(z, age_norm, swapped, latent_size, age_latent_size, latent_regions, bs)
+            age_per_feature = gt_age(z, age_norm, swapped, latent_size, age_latent_size, latent_regions, bs, self.swap_feature, self.age_disentanglement, self.age_per_feature)
+
 
             z[:, -age_latent_size:] = age_per_feature
     
@@ -434,8 +437,8 @@ class AgeVAEDiscriminator(nn.Module):
             nn.LeakyReLU(0.2),
             nn.Linear(64, 32),  
             nn.LeakyReLU(0.2),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
+            nn.Linear(32, 1)#,
+            # nn.Sigmoid()
         )
         else:
             self.dis_layers = nn.ModuleList()
@@ -472,6 +475,41 @@ class AgeVAEDiscriminator(nn.Module):
             output = torch.sigmoid(output)
 
             return output
+
+
+class AgeRegressor(nn.Module):
+    def __init__(self, input_dim, hidden_dims=[128, 64]):
+        """
+        Simple MLP regressor for predicting age from latent vectors.
+
+        Parameters
+        ----------
+        input_dim : int
+            Dimensionality of the input latent vector.
+        hidden_dims : list of int
+            Sizes of hidden layers.
+        """
+        super(AgeRegressor, self).__init__()
+
+        layers = []
+        prev_dim = input_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU(inplace=True))
+            prev_dim = h
+
+        # Final output layer: single scalar (age prediction)
+        layers.append(nn.Linear(prev_dim, 1))
+
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):
+        """
+        x : Input tensor of shape [batch_size, input_dim].
+        Returns: torch.Tensor - Predicted ages of shape [batch_size, 1].
+        """
+        return self.mlp(x)
+
 
 class FactorVAEDiscriminator(nn.Module):
     def __init__(self, latent_dim=10):

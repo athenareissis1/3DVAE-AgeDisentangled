@@ -62,7 +62,10 @@ if config['model']['age_disentanglement'] or config['model']['age_per_feature']:
     config['model']['latent_size'] += config['model']['age_latent_size']
 
 loss_keys = ['reconstruction', 'kl', 'dip', 'factor',
-        'latent_consistency', 'laplacian', 'age', 'contrastive', 'mi', 'latent_similarity', 'adversarial', 'adversarial_latent', 'tc', 'tot']
+        'latent_consistency', 'laplacian', 'age', 'age_remove_mlp', 
+        'age_reconstruction_mlp', 'contrastive', 'mi', 'latent_similarity', 
+        'adversarial', 'adversarial_latent', 'discriminator', 'discriminator_latent', 
+        'discriminator_latent_real', 'discriminator_latent_fake', 'tot']
 
 manager = ModelManager(
     configurations=config, device=device,
