@@ -59,6 +59,7 @@ class ModelManager(torch.nn.Module):
         self._normalized_data = configurations['data']['normalize_data']
         self._age_disentanglement = configurations['model']['age_disentanglement']
         self._age_per_feature = configurations['model']['age_per_feature']
+        self._age_seperation = configurations['model']['age_seperation']
         self._contrastive_loss = configurations['model']['contrastive_loss']
         self._mi_loss = configurations['model']['mi_loss']
         self._adversarial_loss = configurations['model']['adversarial_loss']
@@ -73,6 +74,7 @@ class ModelManager(torch.nn.Module):
         self._latent_size = configurations['model']['latent_size']
         self._age_latent_size = configurations['model']['age_latent_size']
         self._cycle_consistency = configurations['model']['cycle_consistency']
+        self._disease_classification = configurations['model']['disease_classification']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
@@ -116,7 +118,8 @@ class ModelManager(torch.nn.Module):
                           inter_layer=self._inter_layer,
                           conditional=self._model_params['conditional_vae'], 
                           cycle_consistency = self._cycle_consistency, 
-                          age_per_feature=self._age_per_feature).to(device)
+                          age_per_feature=self._age_per_feature, 
+                          disease_classification=self._disease_classification).to(device)
 
         
         self._losses = None
@@ -126,6 +129,7 @@ class ModelManager(torch.nn.Module):
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
         self._w_factor_loss = float(self._optimization_params['factor_weight'])
         self._w_age_loss = float(self._optimization_params['age_weight'])
+        self._w_age_seperation = self._optimization_params['age_weight_seperation']
         self._w_age_remove_mlp = float(self._optimization_params['age_remove_mlp_weight'])
         self._w_age_remove_mlp_grl = float(self._optimization_params['age_remove_mlp_grl_weight'])
         self._w_age_recon_weight = float(self._optimization_params['age_recon_weight'])
@@ -138,6 +142,7 @@ class ModelManager(torch.nn.Module):
         # self._w_adversarial_latent_remove_id_loss = float(self._optimization_params['adversarial_latent_remove_id_weight'])
         self._w_adversarial_larent_grl = float(self._optimization_params['adversarial_latent_grl_weight'])
         self._w_tc_loss = float(self._optimization_params['tc_weight'])
+        self._w_disease_classification_loss = float(self._optimization_params['disease_classification_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -160,8 +165,12 @@ class ModelManager(torch.nn.Module):
             assert self._age_disentanglement
             assert self._age_remove_loss_mlp
             assert self._w_age_remove_mlp_grl > 0
+            if self._disease_classification:
+                latent_size = self._latent_size-self._age_latent_size-1
+            else:
+                latent_size = self._latent_size-self._age_latent_size
             self._net_age_remove_regressor = AgeRegressor(
-                input_dim=self._latent_size-self._age_latent_size).to(device)
+                input_dim=latent_size).to(device)
         if self._w_age_recon_weight > 0:
             assert self._age_disentanglement
             assert self._age_reconstruction_mlp
@@ -202,10 +211,14 @@ class ModelManager(torch.nn.Module):
             assert self._w_adversarial_latent_loss == 0
             assert self._adversarial_loss_latent
         if self._adversarial_loss_latent:
+            if self._disease_classification:
+                latent_size = self._latent_size - 1
+            else:
+                latent_size = self._latent_size
             self._net_discriminator_latent = AgeVAEDiscriminator(
                 discriminator_type="latent",
                 # input_dim = self._latent_size-self._age_latent_size,
-                input_dim = self._latent_size,
+                input_dim = latent_size,
                 in_channels = None,
                 out_channels = None, 
                 spiral_indices = None,
@@ -235,6 +248,15 @@ class ModelManager(torch.nn.Module):
                 self._net.parameters(),
                 lr=float(self._optimization_params['lr']),
                 weight_decay=self._optimization_params['weight_decay'])
+
+        if self._age_seperation:
+            assert self._w_age_loss > 0
+            assert self._age_disentanglement
+            assert self._age_seperation
+            assert self._age_per_feature
+
+        if self._disease_classification:
+            assert self._w_disease_classification_loss > 0
 
     @property
     def loss_keys(self):
@@ -330,6 +352,9 @@ class ModelManager(torch.nn.Module):
         region_names = list(self.template.feat_and_cont.keys())
         latent_size = self._model_params['latent_size'] # including age latents 
 
+        if self._disease_classification:
+            latent_size -= 1
+
         if self._age_disentanglement or self._age_per_feature:
             latent_size -= self._model_params['age_latent_size']
 
@@ -369,6 +394,23 @@ class ModelManager(torch.nn.Module):
                 gt_feature_ages[i, ::] = gt_age[i, ::]
 
         return gt_feature_ages
+
+    def _age_seperation_weights(self, gt_feature_ages):
+
+        ages = [float(age) for age, _ in (item.split(':') for item in self._w_age_seperation)]
+        weights = [float(weight) for _, weight in (item.split(':') for item in self._w_age_seperation)]
+
+        ages_tensor = torch.tensor(ages, device=gt_feature_ages.device, dtype=torch.float)
+        weights_tensor = torch.tensor(weights, device=gt_feature_ages.device, dtype=torch.float)
+
+        weight_tensor = torch.ones_like(gt_feature_ages, dtype=torch.float)
+
+        # Assign weights based on the ages
+        for age, weight in zip(ages_tensor, weights_tensor):
+            mask = gt_feature_ages == age
+            weight_tensor[mask] = weight
+
+        return weight_tensor
 
     def forward(self, data, age, age_norm, swapped):
         return self._net(data, age, age_norm, swapped)
@@ -499,99 +541,6 @@ class ModelManager(torch.nn.Module):
 
 ###########################
 
-
-        # else:
-
-            # """
-            # NEW IMPLEMENTATION FOR SEPERATE ADV TRAINING 
-
-            # changed order than below commented out code to try and handle adv training properly
-            # """
-            # if self._swap_feature:
-            #     swapper = data.swapped
-            # else:
-            #     swapper = np.nan
-            # reconstructed, z, mu, logvar = self.forward(data.x, data.age, data.norm_age, swapper)
-
-            # if self._adversarial_loss and train: # needs fixing to properly handle adv training
-            #     _, discriminator_loss = self._compute_and_train_adversarial_loss(data.x, mu, reconstructed, data.norm_age, train_discriminator=True)
-            #     self._optimizer_discriminator.zero_grad()
-            #     discriminator_loss.backward()
-            #     self._optimizer_discriminator.step()
-            #     loss_adversarial, _ = self._compute_and_train_adversarial_loss(data.x, mu, reconstructed, data.norm_age, train_discriminator=False)
-            # else:
-            #     loss_adversarial = torch.tensor(0, device=device)
-            #     discriminator_loss = torch.tensor(0, device=device)
-
-            # if self._adversarial_loss_latent and train:
-            #     _, discriminator_loss_latent = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age, remove=self._adversarial_loss_latent_remove, train_discriminator=True)
-            #     self._optimizer_discriminator_latent.zero_grad()
-            #     discriminator_loss_latent.backward()
-            #     self._optimizer_discriminator_latent.step()
-            #     if self._adversarial_loss_latent_remove == 'both' or self._adversarial_loss_latent_remove == 'age':
-            #         loss_adversarial_latent_remove_age, _ = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age, remove='age', train_discriminator=False)
-            #     else:
-            #         loss_adversarial_latent_remove_age = torch.tensor(0, device=device)
-                
-            #     if self._adversarial_loss_latent_remove == 'both' or self._adversarial_loss_latent_remove == 'identity':
-            #         loss_adversarial_latent_remove_id, _ = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age, remove='identity', train_discriminator=False)
-            #     else:
-            #         loss_adversarial_latent_remove_id = torch.tensor(0, device=device)
-
-            #     # loss_adversarial_latent = (adv_remove_age_weight * loss_adversarial_latent_age) + (adv_remove_id_weight * loss_adversarial_latent_id)
-            #     # loss_adversarial_latent, _, loss_tc = self._compute_and_train_adversarial_loss_latent(mu, data.norm_age, remove=remove, train_discriminator=False)
-            # else:
-            #     # loss_adversarial_latent = torch.tensor(0, device=device)
-            #     loss_adversarial_latent_remove_age = torch.tensor(0, device=device)
-            #     loss_adversarial_latent_remove_id = torch.tensor(0, device=device)
-            #     discriminator_loss_latent = torch.tensor(0, device=device)
-
-            # if (self._adversarial_loss or self._adversarial_loss_latent) and train:
-            #     reconstructed, z, mu, logvar = self.forward(data.x, data.age, data.norm_age, swapper)
-
-            # loss_recon = self.compute_mse_loss(reconstructed, data.x)
-            # loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
-
-            # if self._w_kl_loss > 0:
-            #     loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement, self._age_latent_size)
-            # else:
-            #     loss_kl = torch.tensor(0, device=device)
-
-            # if self._w_dip_loss > 0:
-            #     loss_dip = self._compute_dip_loss(mu, logvar)
-            # else:
-            #     loss_dip = torch.tensor(0, device=device)
-
-            # if self._swap_feature:
-            #     swapped = data.swapped 
-            #     loss_z_cons = self._compute_latent_consistency(mu, swapped)
-            # else:
-            #     swapped = None 
-            #     loss_z_cons = torch.tensor(0, device=device)
-
-            # if self._age_disentanglement:
-            #     loss_age = self._compute_age_loss(mu, data.norm_age, swapped)
-            # else:
-            #     loss_age = torch.tensor(0, device=device)
-
-            # if self._age_disentanglement and self._age_remove_loss_mlp and train:
-            #     loss_age_remove_mlp = self._compute_age_remove_loss_mlp(mu, data.norm_age)
-            # else:
-            #     loss_age_remove_mlp = torch.tensor(0, device=device)
-
-            # if self._contrastive_loss:
-            #     loss_contrastive = self._compute_contrastive_loss(mu, data.norm_age, swapped)
-            # else:
-            #     loss_contrastive = torch.tensor(0, device=device)
-
-            # if self._mi_loss:
-            #     loss_mi = self._compute_mi_loss(mu)
-            # else:
-            #     loss_mi = torch.tensor(0, device=device)
-
-            # loss_latent_similarity = torch.tensor(0, device=device)
-
-
         else:
         
             if self._swap_feature:
@@ -600,12 +549,11 @@ class ModelManager(torch.nn.Module):
                 swapper = np.nan
             reconstructed, z, mu, logvar = self.forward(data.x, data.age, data.norm_age, swapper)
 
-
             loss_recon = self.compute_mse_loss(reconstructed, data.x)
             loss_laplacian = self._compute_laplacian_regularizer(reconstructed)
 
             if self._w_kl_loss > 0:
-                loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement, self._age_latent_size)
+                loss_kl = self._compute_kl_divergence_loss(mu, logvar, self._age_disentanglement, self._age_latent_size, self._disease_classification)
             else:
                 loss_kl = torch.tensor(0, device=device)
 
@@ -622,9 +570,12 @@ class ModelManager(torch.nn.Module):
                 loss_z_cons = torch.tensor(0, device=device)
 
             if self._age_disentanglement:
-                loss_age = self._compute_age_loss(mu, data.norm_age, swapped)
+                loss_age = self._compute_age_loss(mu, data.age, data.norm_age, swapped)
             else:
                 loss_age = torch.tensor(0, device=device)
+
+            # if self._age_seperation:
+
 
             if self._age_remove_loss_mlp and train:
                 loss_age_remove_mlp = self._compute_age_remove_loss_mlp(mu, data.norm_age)
@@ -666,6 +617,11 @@ class ModelManager(torch.nn.Module):
                 discriminator_loss_latent_real = torch.tensor(0, device=device)
                 discriminator_loss_latent_fake = torch.tensor(0, device=device)
 
+            if self._disease_classification:
+                loss_disease_class = self._compute_disease_classification_loss(mu, data.disease_label)
+            else:
+                loss_disease_class = torch.tensor(0, device=device)
+
 
         loss_tot = self._w_reconstruction_weight * loss_recon + \
             self._w_kl_loss * loss_kl + \
@@ -679,62 +635,13 @@ class ModelManager(torch.nn.Module):
             self._w_mi_loss * loss_mi + \
             self._w_latent_similarity * loss_latent_similarity + \
             self._w_adversarial_loss * loss_adversarial + \
-            self._w_adversarial_latent_loss * loss_adversarial_latent
-            # self._w_adversarial_latent_remove_age_loss * loss_adversarial_latent_remove_age + \
-            # self._w_adversarial_latent_remove_id_loss * loss_adversarial_latent_remove_id
-            
-
-        # if train:
-        #     if self._adversarial_loss or self._adversarial_loss_latent or self._age_remove_loss:
-        #         loss_tot.backward(retain_graph=True)
-        #     else:
-        #         loss_tot.backward()
-
-        #     if self._adversarial_loss:
-        #         self._optimizer_discriminator.zero_grad()
-        #         discriminator_loss.backward()
-        #         self._optimizer_discriminator.step()
-                
-        #     if self._adversarial_loss_latent:
-        #         self._optimizer_discriminator_latent.zero_grad()
-        #         discriminator_loss_latent.backward()
-        #         self._optimizer_discriminator_latent.step()
-            
-        #     if self._age_remove_loss:
-        #         self._optimizer_mlp.zero_grad()
-        #         # loss_age_remove.backward(retain_graph=True)
-        #         self._optimizer_mlp.step()
-
-        #     self._optimizer_vae.step()
-
-        # if train:
-
-        #     self._optimizer_vae.zero_grad()
-        #     if self._adversarial_loss:
-        #         self._optimizer_discriminator.zero_grad()
-        #     if self._adversarial_loss_latent:
-        #         self._optimizer_discriminator_latent.zero_grad()
-
-        #     if self._adversarial_loss or self._adversarial_loss_latent: # or self._age_remove_loss:
-        #         loss_tot.backward(retain_graph=True)
-        #     else:
-        #         loss_tot.backward()
-
-        #     if self._adversarial_loss:
-        #         discriminator_loss.backward(retain_graph=True)
-        #         self._optimizer_discriminator.step()
-
-        #     if self._adversarial_loss_latent:
-        #         discriminator_loss_latent.backward()
-        #         self._optimizer_discriminator_latent.step()
-
-        #     self._optimizer_vae.step()
+            self._w_adversarial_latent_loss * loss_adversarial_latent + \
+            self._w_disease_classification_loss * loss_disease_class
 
         if train:
             self._optimizer_vae.zero_grad()
             loss_tot.backward()
             self._optimizer_vae.step()
-
 
         return {'reconstruction': loss_recon.item(),
                 'kl': loss_kl.item(),
@@ -757,6 +664,7 @@ class ModelManager(torch.nn.Module):
                 'discriminator_latent_real': discriminator_loss_latent_real.item(),
                 'discriminator_latent_fake': discriminator_loss_latent_fake.item(),
                 # 'tc': loss_tc.item(),
+                'disease_classification': loss_disease_class.item(),
                 'tot': loss_tot.item()}
 
     def _do_factor_vae_iteration(self, data, device='cpu', train=True):
@@ -840,7 +748,9 @@ class ModelManager(torch.nn.Module):
         return loss.sum() / bs
 
     @staticmethod
-    def _compute_kl_divergence_loss(mu, logvar, age_disentanglement, age_latent_size):
+    def _compute_kl_divergence_loss(mu, logvar, age_disentanglement, age_latent_size, disease_classification):
+        if disease_classification:
+            mu = mu[:,:-1]
         if age_disentanglement:
             mu = mu[:,:-age_latent_size]
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
@@ -871,28 +781,11 @@ class ModelManager(torch.nn.Module):
         # latent_region = self._latent_regions_age[swapped_feature]
         latent_region = self._latent_regions[swapped_feature]
 
+        if self._disease_classification:
+            z = z[:,:-1]
         if self._age_disentanglement or self._age_per_feature:
             z = z[:, :-self._age_latent_size]
-
-            # #### WHY WAS I INCLUDING THE AGE LATENT IN THE LC LOSS? ###
-            # #  OLD IMPLEMENTATION - do not include the single age latent in LC loss
-            # if self._model_params['age_latent_size'] == 1:
-            #     z = z[:, :-self._age_latent_size]
-            # #  NEW IMPLEMENTATION - include all age latents in LC loss
-            # else:
-            #     index_list = []
-            #     special_index = self.model_latent_size - self._age_latent_size
-
-            #     for i in range(special_index):
-            #         index_list.append(i)
-            #         if (i + 1) % 5 == 0:
-            #             index_list.append(special_index)
-            #             special_index += 1
-
-            #     # indexes on new order of latents to have the feature age latents at the end of the feature shape latents
-            #     index_tensor = torch.tensor(index_list, dtype=torch.long)
-
-            #     z = z[:, index_tensor]
+        
 
         z_feature = z[:, latent_region[0]:latent_region[1]].view(bs, bs, -1)
         z_else = torch.cat([z[:, :latent_region[0]],
@@ -925,7 +818,10 @@ class ModelManager(torch.nn.Module):
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
     
-    def _compute_age_loss(self, mu, gt_age, swapped_feature):
+    def _compute_age_loss(self, mu, gt_age, gt_age_norm, swapped_feature):
+
+        if self._disease_classification:
+            mu = mu[:,:-1]
 
         age_latents = mu[:, -self._age_latent_size:]
 
@@ -933,22 +829,33 @@ class ModelManager(torch.nn.Module):
             assert self._age_latent_size > 1
             
             bs = self._optimization_params['batch_size']
-            # bs = mu.shape[0]
 
-            gt_feature_ages = self._gt_age(bs, age_latents, gt_age, swapped_feature)
-            
-            age_loss = self.compute_mse_loss(age_latents, gt_feature_ages)
+            gt_feature_ages = self._gt_age(bs, age_latents, gt_age, swapped_feature).to(torch.int)
+            gt_feature_ages_norm = self._gt_age(bs, age_latents, gt_age_norm, swapped_feature)
+
+            if self._age_seperation:
+                mse_pred_gt = (age_latents - gt_feature_ages_norm)**2
+                age_seperation_weights = self._age_seperation_weights(gt_feature_ages)
+                mse_pred_gt_weighted = mse_pred_gt * age_seperation_weights
+                age_loss = torch.mean(torch.sum(mse_pred_gt_weighted, dim=1))
+            else:
+                age_loss = self.compute_mse_loss(age_latents, gt_feature_ages_norm)
 
         else:
             if self._swap_feature:
                 age_latents = age_latents[self.batch_diagonal_idx]
 
-            gt_age = gt_age.to(dtype=torch.float32).squeeze()
-            age_loss = self.compute_mse_loss(age_latents, gt_age)
+            # add if age seperartion
+
+            gt_age_norm = gt_age_norm.to(dtype=torch.float32).squeeze()
+            age_loss = self.compute_mse_loss(age_latents, gt_age_norm)
 
         return age_loss
     
     def _compute_age_remove_loss_mlp(self, mu, gt_age):
+
+        if self._disease_classification:
+            mu = mu[:,:-1]
 
         if self._swap_feature:
             mu = mu[self.batch_diagonal_idx]
@@ -982,7 +889,16 @@ class ModelManager(torch.nn.Module):
     def _compute_contrastive_loss(self, latent, gt_age, swapped_feature):
         # add in if age_per_feature
         # if self._swap_feature:
-        #     latent = latent[self.batch_diagonal_idx]
+        #     latent = latent[self.batch_diagonal_idx] # is this needed?
+
+        ### correct for age and disease classification losses including Reg and Class losses
+
+        # pull error warning here
+        raise KeyError("Contrastive learning loss needs upddating with disease classification latent.")
+
+        if self._disease_classification:
+            disease_latent = latent[:,-1]
+            latent = latent[:,:-1]
 
         age_latents = latent[:, -self._age_latent_size:]
         bs = self._optimization_params['batch_size']
@@ -995,6 +911,11 @@ class ModelManager(torch.nn.Module):
         return loss_snn_reg
 
     def _compute_mi_loss(self, mu):
+
+        # pull error warning here
+        raise KeyError("MI loss needs upddating with disease classification latent.")
+    
+        # is only using main diagonal needed?
 
         age_latents_size = self._model_params['age_latent_size']
 
@@ -1015,6 +936,8 @@ class ModelManager(torch.nn.Module):
         return mi_loss
     
     def reconstructed_new_ages(self, z, gt_ages, bs):
+
+        # if using this need to change to handle new disease classification latent
 
         if bs == 4:
 
@@ -1111,6 +1034,10 @@ class ModelManager(torch.nn.Module):
         fake data = reconstructed data that is the output (plus reconstruction after changing the age)
 
         """
+
+        # pull error warning here
+        raise KeyError("ADV for reconstriuction loss needs upddating with disease classification latent.")
+
         # data.x, mu, reconstructed, data.norm_age)
         bs_fake_data = 4  #### change when using 1 new age or 3 new ages 
 
@@ -1238,86 +1165,7 @@ class ModelManager(torch.nn.Module):
 
             ############# Option 2 ############# 
 
-            # """
-            # ORIGINAL IMPLEMENTAITON
-
-            # real data = latent output of the encoder
-            # fake data = ideneity latnets output of the encoder but with the age latents permuted together between the minibatch
-            # """
-
-            # lambda_grl = 1.0 #scale factor for gradient reversal layer
-            # z_reversed = GradientReversalLayer.apply(z, lambda_grl)
-
-            # # Randomly permute the age latents within the minibatch, keeping all 9 values together
-            # z_permuted = z.clone()
-            # permuted_indices = torch.randperm(z_ages.size(0))
-            # z_permuted[:, -self._age_latent_size:] = z_ages[permuted_indices]
-
-            # # Discriminator forward pass
-            # real_output = self._net_discriminator_latent(z_reversed)
-            # fake_output = self._net_discriminator_latent(z_permuted)
-
-            # d_loss_real = nn.BCELoss()(real_output, real_labels)
-            # d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
-            # d_loss = d_loss_real + d_loss_fake
-
-            # ## to plot seperately log here d_loss_real and d_loss_fake
-
-            # g_loss = nn.BCELoss()(fake_output, real_labels)
-            # # tc_loss = torch.tensor(0, device=self.device)
-
-            # """
-            # NEW IMPLEMENTATION
-            
-            # handle updating the encoder and ADV network correctly
-            # """
-
-            # # Random permutation of age latents
-            # permuted_indices = torch.randperm(z_ages.size(0))
-            # z_permuted = z.clone()
-            # z_permuted[:, -self._age_latent_size:] = z_ages[permuted_indices]
-
-            # if train_discriminator:
-            #     # detach z so encoder is not touched
-            #     real_output = self._net_discriminator_latent(z.detach())
-            #     fake_output = self._net_discriminator_latent(z_permuted.detach())
-
-            #     d_loss_real = nn.BCELoss()(real_output, real_labels)
-            #     d_loss_fake = nn.BCELoss()(fake_output, fake_labels)
-            #     d_loss = d_loss_real + d_loss_fake
-
-            #     g_loss = torch.tensor(0, device=self.device)
-
-            #     return  g_loss, d_loss
-
-            # else:
-            #     # train encoder with GRL
-            #     lambda_grl = self._w_adversarial_larent_grl
-            #     z_id  = z[:, :-self._age_latent_size]
-            #     z_age = z[:, -self._age_latent_size:]
-
-            #     if remove=='age':
-            #         # GRL only to identity part, detach age part
-            #         z_reversed_id = GradientReversalLayer.apply(z_id, lambda_grl)
-            #         z_input = torch.cat([z_reversed_id, z_age.detach()], dim=1)
-            #     elif remove=='identity':
-            #         # GRL only to age part, detach identity part
-            #         z_reversed_age = GradientReversalLayer.apply(z_age, lambda_grl)
-            #         z_input = torch.cat([z_id.detach(), z_reversed_age], dim=1)
-            #     else:
-            #         # error
-            #         raise ValueError("remove must be 'age' or 'identity'")
-
-            #     fake_output = self._net_discriminator_latent(z_input)
-
-            #     g_loss = nn.BCELoss()(fake_output, real_labels)
-
-            #     d_loss = torch.tensor(0, device=self.device)
-
-            #     return g_loss, d_loss
-
             """
-            FINAL IMPLEMENTAITON - AFTER DISCUSSING WITH SIMONE
 
             purpose: remove id from age only (mlp critic will remove age from id)
 
@@ -1326,6 +1174,9 @@ class ModelManager(torch.nn.Module):
             real data = latent output of the encoder
             fake data = ideneity latnets output of the encoder but with the age latents permuted together between the minibatch
             """
+
+            if self._disease_classification:
+                mu = mu[:,:-1]
 
             if self._swap_feature:
                     mu = mu[self.batch_diagonal_idx]
@@ -1546,6 +1397,17 @@ class ModelManager(torch.nn.Module):
         #############  ############# 
 
         return g_loss, d_loss
+
+    def _compute_disease_classification_loss(self, mu, disease_labels):
+
+        if self._swap_feature:
+            mu = mu[self.batch_diagonal_idx]
+
+        disease_latents = mu[:, -1]
+
+        disease_loss = nn.BCEWithLogitsLoss()(disease_latents.squeeze(), disease_labels.float().to(self.device))
+
+        return disease_loss
 
 
     @staticmethod

@@ -98,7 +98,8 @@ class SpiralDeblock(nn.Module):
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, latent_size, age_latent_size, inter_layer_count, inter_layer_size,
                  spiral_indices, down_transform, up_transform, diagonal_idx, batch_size, latent_regions, precomputed_storage_path, data_type,
-                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False, conditional=False, cycle_consistency=False, age_per_feature=False):
+                 is_vae=False, age_disentanglement=False, swap_feature=False, inter_layer=False, conditional=False, cycle_consistency=False, 
+                 age_per_feature=False, disease_classification=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -120,6 +121,7 @@ class Model(nn.Module):
         self.inter_layer_size = inter_layer_size
         self.conditional = conditional
         self.cycle_consistency = cycle_consistency
+        self.disease_classification = disease_classification
         self.precomputed_storage_path = precomputed_storage_path
         self._data_type = data_type
         
@@ -190,18 +192,22 @@ class Model(nn.Module):
             # second branch to get age 
             if self.age_disentanglement:
                 self.age = nn.Linear(self.inter_layer_size, age_latent_size) 
+            
+            # might need updating for adding single disease classification latent
         
         else:
             #  if age_disentanglement is True, age latent is removed from mu layer
             if self.is_vae:  
+                if_vae_latent_size = latent_size
+                if self.disease_classification:
+                    if_vae_latent_size -= 1
                 if self.age_disentanglement:
-                    self.en_layers.append(
-                        nn.Linear(self.num_vert * out_channels[-1], latent_size-age_latent_size))
-                else:
-                    self.en_layers.append(
-                        nn.Linear(self.num_vert * out_channels[-1], latent_size))
+                    if_vae_latent_size -= age_latent_size
+                
+                self.en_layers.append(
+                    nn.Linear(self.num_vert * out_channels[-1], if_vae_latent_size))
                     
-            # add another linear layer for logvar 
+            # add another linear layer - previous is for logvar and this is for mu
             self.en_layers.append(
                 nn.Linear(self.num_vert * out_channels[-1], latent_size))
 
@@ -305,16 +311,16 @@ class Model(nn.Module):
                 x = layer(x)
         return x
     
-    def change_age_latent(self, z, age):
-        z_copy = z.clone()
-        if self.swap_feature:
-            z_copy = z_copy[self.diagonal_idx, ::]
-            z_copy[:,-1] = age.view(-1)
-            z[self.diagonal_idx, ::] = z_copy
-        else:
-            z[:,-1] = age.view(-1)
+    # def change_age_latent(self, z, age):
+    #     z_copy = z.clone()
+    #     if self.swap_feature:
+    #         z_copy = z_copy[self.diagonal_idx, ::]
+    #         z_copy[:,-1] = age.view(-1)
+    #         z[self.diagonal_idx, ::] = z_copy
+    #     else:
+    #         z[:,-1] = age.view(-1)
             
-        return z
+    #     return z
 
     def forward(self, data, age, age_norm, swapped):
         
@@ -323,7 +329,7 @@ class Model(nn.Module):
         
         mu, logvar = self.encode(data)
         if self.is_vae and self.training:
-            z = self._reparameterize(mu, logvar, self.age_latent_size, self.age_disentanglement)
+            z = self._reparameterize(mu, logvar, self.age_latent_size, self.age_disentanglement, self.disease_classification)
         else:
             z = mu
 
@@ -401,17 +407,22 @@ class Model(nn.Module):
     ###############
 
     @staticmethod
-    def _reparameterize(mu, logvar, age_latent_size, age_disentanglement=False):
+    def _reparameterize(mu, logvar, age_latent_size, age_disentanglement=False, disease_classification=False):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
+        if disease_classification:
+            disease_latent_size = 1
+        else:
+            disease_latent_size = 0
         if age_disentanglement:
-            mu_feat = mu[:,:-age_latent_size]
-            if age_latent_size > 1:
-                mu_age = mu[:, -age_latent_size:]
+            other_latent_size = age_latent_size + disease_latent_size
+            mu_id = mu[:,:-other_latent_size]
+            if other_latent_size > 1:
+                mu_other = mu[:, -other_latent_size:]
             else:
-                mu_age = mu[:, -age_latent_size].view(-1, 1)
-            z = mu_feat + eps * std
-            z = torch.cat((z, mu_age), dim=1)
+                mu_other = mu[:, -other_latent_size].view(-1, 1)
+            z = mu_id + eps * std
+            z = torch.cat((z, mu_other), dim=1)
         else:
             z = mu + eps * std
         return z

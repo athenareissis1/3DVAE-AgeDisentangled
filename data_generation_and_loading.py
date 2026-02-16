@@ -15,6 +15,9 @@ from torch_geometric.data import Dataset, InMemoryDataset, Data
 from swap_batch_transform import SwapFeatures
 from sklearn.model_selection import train_test_split
 
+import collections
+from torch.utils.data import WeightedRandomSampler
+
 
 class DataGenerator:
     def __init__(self, model_dir, data_dir='./data'):
@@ -106,15 +109,50 @@ def get_data_loaders(config, template=None):
 
     swapper = SwapFeatures(template, config['model']) if data_config['swap_features'] else None
 
-    train_loader = MeshLoader(train_set, batch_size, shuffle=True,
-                              drop_last=True, feature_swapper=swapper,
-                              num_workers=data_config['number_of_workers'])
+    # --------- build WeightedRandomSampler for train_set ----------
+
+    if config['data']['weight_imbalanced_ages']:
+
+        train_ages = []
+        for i in range(len(train_set)):
+            d = train_set[i]
+            train_ages.append(int(float(d.age)))
+
+        age_counts = collections.Counter(train_ages)     
+        # inverse frequency per age: rarer ages get larger weights
+        age_weights = {age: 1.0 / count for age, count in age_counts.items()}
+
+        sample_weights = torch.tensor(
+            [age_weights[int(a)] for a in train_ages],
+            dtype=torch.float)
+
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(train_set),   
+            replacement=True)
+
+        train_loader = MeshLoader(train_set, batch_size,
+                                shuffle=False, sampler=sampler,
+                                drop_last=True, feature_swapper=swapper,
+                                num_workers=data_config['number_of_workers'])
+        
+    else:
+
+    # -------------------------------------------------------------------
+
+        train_loader = MeshLoader(train_set, batch_size, 
+                                shuffle=True,
+                                drop_last=True, feature_swapper=swapper,
+                                num_workers=data_config['number_of_workers'])
+    
+
     validation_loader = MeshLoader(validation_set, batch_size, shuffle=True,
                                    drop_last=True, feature_swapper=swapper,
                                    num_workers=data_config['number_of_workers'])
     test_loader = MeshLoader(test_set, batch_size, shuffle=False,
                              drop_last=True, feature_swapper=swapper,
                              num_workers=data_config['number_of_workers'])
+    
     return train_loader, validation_loader, test_loader, normalization_dict
 
 
@@ -389,21 +427,37 @@ class MeshInMemoryDataset(InMemoryDataset):
 
             if self._config['model']['age_disentanglement']:
                 # using train_test_split from sklearn
-                age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'AgeYears'])
+                age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'age_bins', 'AgeYears'])
                 all_ages = []
+                all_ages_bins = []
                 for i, fname in enumerate(all_file_names_copy):
                     file_id = self.file_id(fname)
                     if file_id in age_metadata['id'].values:
                         age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
+                        age_bins = age_metadata.loc[age_metadata['id'] == file_id, 'age_bins'].values[0]
                         if age >= int(min_age) and age <= int(max_age):
                             all_ages.append(age)
+                            all_ages_bins.append(age_bins)
                         else:
                             all_file_names.remove(fname)
                     else:
                         all_file_names.remove(fname)
 
+                # Check for ages with only one occurrence
+                unique_ages = {age: all_ages.count(age) for age in set(all_ages)}
+                single_occurrence_ages = [age for age, count in unique_ages.items() if count == 1]
+
+                if single_occurrence_ages:
+                    print(f"Ages with only one occurrence: {single_occurrence_ages}")
+                    print("Use age_bins for dataset split stratification.")
+                    stratify_ages = all_ages_bins
+                else:
+                    # Proceed with the original stratification
+                    stratify_ages = all_ages
+    
+
                 # Split the data into train and temporary test sets
-                train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(all_file_names, all_ages, test_size=0.15, stratify=all_ages, random_state=42)
+                train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(all_file_names, stratify_ages, test_size=0.15, stratify=stratify_ages, random_state=42)
                 # Check the number of unique classes in temp_test_ages
                 num_classes = len(set(temp_test_ages))
 
@@ -510,6 +564,17 @@ class MeshInMemoryDataset(InMemoryDataset):
                 
         return age_metadata
 
+
+    def disease_label_data(self, fname):
+        file_id = self.file_id(fname)
+        disease_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'disease_label'])
+        if file_id in disease_metadata['id'].values:
+            disease_label = disease_metadata.loc[disease_metadata['id'] == file_id, 'disease_label'].values[0]
+        else:
+            disease_label = np.nan
+
+        return disease_label
+
     def _process_set(self, files_list):
         dataset = []
         for fname in tqdm.tqdm(files_list):
@@ -520,13 +585,15 @@ class MeshInMemoryDataset(InMemoryDataset):
 
             if self._config['model']['age_disentanglement']:
                 mesh_age, mesh_norm_age = self.age_data(fname)
-                mesh_name = self.file_id(fname)
-                data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)
             else:
                 mesh_age = np.nan
                 mesh_norm_age = np.nan
-                mesh_name = self.file_id(fname)
-                data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name)
+            if self._config['model']['disease_classification']:
+                mesh_disease_label = self.disease_label_data(fname)
+            else:
+                mesh_disease_label = np.nan
+            mesh_name = self.file_id(fname)
+            data = Data(x=mesh_verts, age=mesh_age, norm_age=mesh_norm_age, fname=mesh_name, disease_label=mesh_disease_label)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)

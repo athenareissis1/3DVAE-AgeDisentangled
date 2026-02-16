@@ -116,18 +116,18 @@ class Tester:
 
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
             dataset = self._test_loader # self._val_loader,
-            # self.dataset_split(self._train_loader, self._val_loader, self._test_loader)
+            # self.dataset_split()
             # self.age_encoder_decoder_accuracy(self._train_loader, dataset)
-            # self.age_prediction_MLP(self._train_loader, dataset)
-            # self.age_latent_changing(dataset)
-            # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
-            # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-            # self.proportions(dataset)
+            self.age_prediction_MLP(self._train_loader, dataset)
+            self.age_latent_changing(dataset)
+            self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+            self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+            self.proportions(dataset)
             self.plot_proportions()
 
-            # # relatives tests
-            # self.relatives_aging_diff_new()
-            # self.relatives_aging()
+            # relatives tests
+            self.relatives_aging_diff_new()
+            self.relatives_aging()
         
         self._manager.log_hyperparameters(self.log, self._config, self._logging)
         
@@ -1419,171 +1419,128 @@ class Tester:
                     age_gt = [gt_age[i].item()] * age_latent_size
                     age_latents_gt.append(age_gt)
 
+        ### PLOT RESULTS ###
 
-            ######## FOR FIRST PLOTS #########
+            # Convert age_random_all and age_predict_all to numpy arrays for easier manipulation
+            age_latents_rand = np.array(age_latents_rand)
+            age_preds_decoder = np.array(age_preds_decoder)
+            age_latents_gt = np.array(age_latents_gt)
+            age_preds_encoder = np.array(age_preds_encoder)
 
+            for i in range(2):
 
-            # if self._config['model']['age_per_feature']:
-            #     age_std = np.std(age_preds_decoder, axis=1)
-            # else:
-            #     age_std = np.zeros(len(age_preds_decoder)) 
-            # age_std_scaled = [s * 100 for s in age_std]
-
-            # # calculate averages
-            # age_latents_rand_mean = [np.mean(arr) for arr in age_latents_rand]
-            # age_preds_decoder_mean = [np.mean(arr) for arr in age_preds_decoder]
-            # age_latents_gt_mean = [np.mean(arr) for arr in age_latents_gt]
-            # age_preds_encoder_mean = [np.mean(arr) for arr in age_preds_encoder]
-
-            # average_pred_diff_latent_pred = np.mean(np.abs(np.array(age_latents_rand_mean) - np.array(age_preds_decoder_mean)))
-            # average_pred_diff_actual_pred = np.mean(np.abs(np.array(age_latents_gt_mean) - np.array(age_preds_decoder_mean)))
-
-            # if j == 0:
-            #     train_age_latents = age_latents_rand_mean
-            #     train_age_preds_decoder = age_preds_decoder_mean
-            #     train_age_latents_gt = age_latents_gt_mean
-            #     train_average_pred_diff_latent_pred = average_pred_diff_latent_pred
-            #     train_average_pred_diff_actual_pred = average_pred_diff_actual_pred
-            #     train_age_std = age_std_scaled
-            # else:
-            #     test_age_latents = age_latents_rand_mean
-            #     test_age_preds_decoder = age_preds_decoder_mean
-            #     test_age_latents_gt = age_latents_gt_mean
-            #     test_average_pred_diff_latent_pred = average_pred_diff_latent_pred
-            #     test_average_pred_diff_actual_pred = average_pred_diff_actual_pred
-            #     test_age_std = age_std_scaled
-
-        # # Define base marker size and scaling factor
-        # base_marker_size = 50
-        # scaling_factor = 200
-        # max_marker_size = 300
-
-        # # Compute the maximum std value across train and test datasets
-        # max_std = max(max(train_age_std), max(test_age_std))
-
-        # # Normalize the std values relative to the maximum std
-        # train_age_std_normalized = [s / max_std for s in train_age_std]
-        # test_age_std_normalized = [s / max_std for s in test_age_std]
-
-        # # Scale marker sizes dynamically based on normalized std
-        # train_marker_sizes = [min(base_marker_size + s * scaling_factor, max_marker_size) for s in train_age_std_normalized]
-        # test_marker_sizes = [min(base_marker_size + s * scaling_factor, max_marker_size) for s in test_age_std_normalized]
-
-        # # First scatter plot: Random assigned age vs predicted age
-        # plt.figure(figsize=(6, 6))
-        # plt.clf()
-
-        # plt.scatter(train_age_latents, train_age_preds_decoder, s=train_marker_sizes, color='yellow', marker='x', label='Train dataset')
-        # plt.scatter(test_age_latents, test_age_preds_decoder, s=test_marker_sizes, color='orange', marker='o', label='Test dataset')
-        # plt.plot([age_lower, age_upper], [age_lower, age_upper], 'r--')
-
-        # plt.title(f'Age prediction on age latent using randomly assigned age')
-        # plt.xlabel('Random assigned age (years)')
-        # plt.ylabel('Predicted age (years)')
-        # plt.text(0.30, 0.1, f'Mean absolute difference (train) = {round(train_average_pred_diff_latent_pred, 2)} years', transform=plt.gca().transAxes)
-        # plt.text(0.30, 0.05, f'Mean absolute difference (test) = {round(test_average_pred_diff_latent_pred, 2)} years', transform=plt.gca().transAxes)
-
-        # # # Add average standard deviation values as text
-        # # plt.text(0.30, 0.2, f'Average std (train) = {round(np.mean(train_age_std), 2)}', transform=plt.gca().transAxes)
-        # # plt.text(0.30, 0.15, f'Average std (test) = {round(np.mean(test_age_std), 2)}', transform=plt.gca().transAxes)
-
-        # # Fixed marker sizes for legend
-        # legend_handles = [
-        #     plt.scatter([], [], color='yellow', marker='x', s=base_marker_size, label='Train dataset'),
-        #     plt.scatter([], [], color='orange', marker='o', s=base_marker_size, label='Test dataset')
-        # ]
-        # plt.legend(handles=legend_handles, loc='upper left')
-
-        # plt.xticks(range(0, 18))
-        # plt.yticks(range(0, 18))
-
-        # file_path = os.path.join(self._out_dir, f'decoder_accuracy_random_{age_range}.png')
-        # plt.savefig(file_path)
-        # self.log[f'test/decoder_accuracy_random_{age_range}'].upload(file_path)
-
-
-        ######### SECOND PLOT #########
-
-        # Convert age_random_all and age_predict_all to numpy arrays for easier manipulation
-        age_latents_rand = np.array(age_latents_rand)
-        age_preds_decoder = np.array(age_preds_decoder)
-        age_latents_gt = np.array(age_latents_gt)
-        age_preds_encoder = np.array(age_preds_encoder)
-
-        for i in range(2):
-
-            if i == 0:
-                test_name = 'encoder'
-            else:
-                test_name = 'decoder'
-
-            # Second plot: Each of the 9 age latents vs GT age for the test set
-            plt.figure(figsize=(8, 6))
-            plt.clf()
-
-            # Define colors for the 9 age latents
-            colors = plt.cm.tab10.colors  # Use a colormap with 10 distinct colors
-
-            features = ["Temporal", "Eyes", "Cheekbones", "Cheeks", "Jaw", "Forehead", "Chin", "Lips", "Nose"]
-
-            # Initialize a list for errors
-            mae_per_latent = []
-            mse_per_latent = []
-
-            # Iterate over each of the 9 age latents and plot it against the GT age
-            for latent_idx in range(9):  # Assuming there are 9 age latents
                 if i == 0:
-                    gt_values = age_latents_gt[:, latent_idx]
-                    pred_values = age_preds_encoder[:, latent_idx]
-                else:   
-                    gt_values = age_latents_rand[:, latent_idx]
-                    pred_values = age_preds_decoder[:, latent_idx]
+                    test_name = 'encoder'
+                else:
+                    test_name = 'decoder'
+
+                # Second plot: Each of the 9 age latents vs GT age for the test set
+                plt.figure(figsize=(8, 6))
+                plt.clf()
+
+                # Define colors for the 9 age latents
+                colors = plt.cm.tab10.colors  # Use a colormap with 10 distinct colors
+
+                features = ["Temporal", "Eyes", "Cheekbones", "Cheeks", "Jaw", "Forehead", "Chin", "Lips", "Nose"]
+
+                # Initialize a list for errors
+                mae_per_latent = []
+                mse_per_latent = []
+
+                # containers for per-age MAE
+                max_age_int = 17
+                per_age_abs_errors = [[] for _ in range(max_age_int + 1)]
+                all_abs_errors = []
+
+                # Iterate over each of the age latents and plot it against the GT age
+                for latent_idx in range(self._config['model']['age_latent_size']): 
+                    if i == 0:
+                        gt_values = age_latents_gt[:, latent_idx]
+                        pred_values = age_preds_encoder[:, latent_idx]
+                    else:   
+                        gt_values = age_latents_rand[:, latent_idx]
+                        pred_values = age_preds_decoder[:, latent_idx]
+                    
+                    # Calculate MAE for the current latent
+                    mae = np.mean(np.abs(np.array(pred_values) - np.array(gt_values)))
+                    mae_per_latent.append(mae)
+
+                    # Calculate MSE for the current latent
+                    mse = np.mean((np.array(pred_values) - np.array(gt_values))**2)
+                    mse_per_latent.append(mse)
+
+                    # --- NEW: accumulate absolute errors per integer GT age bin ---
+                    gt_int = np.clip(np.floor(gt_values).astype(int), 0, max_age_int)
+                    abs_err = np.abs(np.array(pred_values) - np.array(gt_values))
+                    for age_bin in range(max_age_int + 1):
+                        mask = (gt_int == age_bin)
+                        if np.any(mask):
+                            per_age_abs_errors[age_bin].extend(abs_err[mask].tolist())
+                    # --------------------------------------------------------------
+                    
+                    # Plot the scatter for the current latent
+                    plt.scatter(gt_values, pred_values, color=colors[latent_idx % len(colors)], label=f'{features[latent_idx]} (MAE: {mae:.2f})', alpha=0.7)
+                    # plt.scatter(gt_values, pred_values, color=colors[latent_idx % len(colors)], label=f'{features[latent_idx]} (MAE: {mae:.2f}, MSE: {mse:.2f})', alpha=0.7)
+
+                # Add a diagonal line for reference
+                plt.plot([0, 17], [0, 17], 'r--', label='Ideal')  # Assuming age range is 0-18
+
+                # Set ticks
+                plt.xticks(range(0, 18))
+                plt.yticks(range(0, 18))
+
+                if i == 0:
+                    plt.title('Encoder: Predicted vs Ground Truth for Each Age Latent')
+                    plt.xlabel('Ground Truth Age (years)')
+                    plt.ylabel('Predicted Age Latent Value')
+                else:
+                    plt.title('Decoder: Predicted vs Randomly Assigned for Each Age Latent')
+                    plt.xlabel('Randomly Assigned Age (years)')
+                    plt.ylabel('Predicted Age Latent Value')
+                plt.legend(loc='upper left', bbox_to_anchor=(1, 1))  # Place legend outside the plot
+                plt.grid(True)
+
+                # Add total MAE for all latents as text on the graph
+                total_mae = np.mean(mae_per_latent)
+                plt.text(1.02, 0.47, f'Total MAE: {total_mae:.2f}', transform=plt.gca().transAxes, fontsize=10, color='black')
+
+                # --- NEW: compute and display per-integer-age MAE block ---
+                per_age_mae_lines = []
+                for age_bin in range(max_age_int + 1):
+                    if len(per_age_abs_errors[age_bin]) > 0:
+                        age_mae = np.mean(per_age_abs_errors[age_bin])
+                        per_age_mae_lines.append(f'Age {age_bin} (MAE: {age_mae:.2f})')
+                    else:
+                        per_age_mae_lines.append(f'Age {age_bin} (MAE: -)')
+
+                if per_age_mae_lines:
+                    per_age_text = "MAE per age (years):\n" + "\n".join(per_age_mae_lines)
+
+                    plt.text(1.02, 0.42, per_age_text, transform=plt.gca().transAxes, fontsize=10, fontfamily='sans-serif', color='black', va='top',
+                        bbox=dict(
+                            boxstyle='round',
+                            facecolor='white',
+                            edgecolor='black',
+                            alpha=0.8
+                        )
+                    )
                 
-                # Calculate MAE for the current latent
-                mae = np.mean(np.abs(np.array(pred_values) - np.array(gt_values)))
-                mae_per_latent.append(mae)
+                # Add total MAE for all ages as text on the graph
+                total_mae = np.mean(abs_err)
+                plt.text(1.02, -0.29, f'Total MAE: {total_mae:.2f}', transform=plt.gca().transAxes, fontsize=10, color='black')
+                # ------------------------------------------------------------
 
-                # Calculate MSE for the current latent
-                mse = np.mean((np.array(pred_values) - np.array(gt_values))**2)
-                mse_per_latent.append(mse)
-                
-                # Plot the scatter for the current latent
-                plt.scatter(gt_values, pred_values, color=colors[latent_idx % len(colors)], label=f'{features[latent_idx]} (MAE: {mae:.2f})', alpha=0.7)
-                # plt.scatter(gt_values, pred_values, color=colors[latent_idx % len(colors)], label=f'{features[latent_idx]} (MAE: {mae:.2f}, MSE: {mse:.2f})', alpha=0.7)
-
-            # Add a diagonal line for reference
-            plt.plot([0, 17], [0, 17], 'r--', label='Ideal')  # Assuming age range is 0-18
-
-            # Set ticks
-            plt.xticks(range(0, 18))
-            plt.yticks(range(0, 18))
-
-            if i == 0:
-                plt.title('Encoder: Predicted vs Ground Truth for Each Age Latent')
-                plt.xlabel('Ground Truth Age (years)')
-                plt.ylabel('Predicted Age Latent Value')
-            else:
-                plt.title('Decoder: Predicted vs Randomly Assigned for Each Age Latent')
-                plt.xlabel('Randomly Assigned Age (years)')
-                plt.ylabel('Predicted Age Latent Value')
-            plt.legend(loc='upper left', bbox_to_anchor=(1, 1))  # Place legend outside the plot
-            plt.grid(True)
-
-            # Add total MAE for all latents as text on the graph
-            total_mae = np.mean(mae_per_latent)
-            plt.text(1.01, 0.45, f'Total MAE: {total_mae:.2f}', transform=plt.gca().transAxes, fontsize=10, color='black')
-
-            # # Add total MSE for all latents as text on the graph
-            # total_mse = np.mean(mse_per_latent)
-            # plt.text(1.01, 0.4, f'Total MSE: {total_mse:.2f}', transform=plt.gca().transAxes, fontsize=10, color='black')
-
-            # Save the plot
-            file_path = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.png')
-            plt.savefig(file_path, bbox_inches='tight')  # Save with tight layout to include the legend
-            self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
+                # Save the plot
+                if j == 0:
+                    test_name =  test_name + '_train'
+                # else:
+                #     test_name = 'test_' + test_name
+                file_path = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.png')
+                plt.savefig(file_path, bbox_inches='tight')  # Save with tight layout to include the legend
+                self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
 
 
-    def dataset_split(self, train_loader, val_loader, test_loader):
+    def dataset_split(self):
 
         """
         
@@ -1610,8 +1567,10 @@ class Tester:
 
         # Initialize lists to store ages and their associated split type
         ages_list = []
+        ages_decimals_list = []
         data_type_list = []
         dataset_list = []
+        fname_list = []
 
         # Iterate over train, val, and test splits in the precomputed data
         for split_type, ids in data_split.items():
@@ -1622,21 +1581,90 @@ class Tester:
                 if 'combined' in self._data_type:
                     entry_id = int(entry_id)
                 dataset_row = metadata.loc[metadata['id'] == entry_id, 'Dataset']
-                age_row = metadata.loc[metadata['id'] == entry_id, 'AgeYears']
-                
+                age_row = metadata.loc[metadata['id'] == entry_id, 'AgeYears']   
+                age_decimals_row = metadata.loc[metadata['id'] == entry_id, 'age']     
+                fname = entry_id        
 
                 # If the ID exists in the metadata, add its age and split type to the lists
                 if not dataset_row.empty and not age_row.empty:
                     ages_list.append(age_row.values[0])
+                    ages_decimals_list.append(age_decimals_row.values[0])
                     data_type_list.append(split_type)  
                     dataset_list.append(dataset_row.values[0])
+                    fname_list.append(fname)
         
         total_subjects = len(ages_list)
 
-    # create age distribution graph of all data 
+    # create a .txt file to state for train, val and test how many subjects there are for each age group and list the fnames that are in that group
 
         age_range = self._config['data']['dataset_age_range']
         age_lower, age_upper = map(int, age_range.split('-'))
+
+        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_age_split_fnames_{age_range}.txt')
+        
+        if not os.path.exists(storage_path):
+
+            # 1) integer-binned summary: split -> age(int) -> list[fname]
+            split_age_fnames = {'train': {}, 'val': {}, 'test': {}}
+            for split, age, fname in zip(data_type_list, ages_decimals_list, fname_list):
+                age_int = int(np.floor(age))
+                age_int = max(age_lower, min(age_int, age_upper))
+                if split not in split_age_fnames:
+                    split_age_fnames[split] = {}
+                split_dict = split_age_fnames[split]
+                if age_int not in split_dict:
+                    split_dict[age_int] = []
+                split_dict[age_int].append(fname)
+
+            # 2) decimal-age summary: split -> exact_age(float) -> list[fname]
+            split_decimal_fnames = {'train': {}, 'val': {}, 'test': {}}
+            for split, age, fname in zip(data_type_list, ages_decimals_list, fname_list):
+                if split not in split_decimal_fnames:
+                    split_decimal_fnames[split] = {}
+                # use the raw float as key; you can round if needed, e.g. round(age, 3)
+                age_key = float(age)
+                if int(age_key) > 4:
+                    continue
+                if age_key not in split_decimal_fnames[split]:
+                    split_decimal_fnames[split][age_key] = []
+                split_decimal_fnames[split][age_key].append(fname)
+
+            
+            with open(storage_path, 'w') as f:
+                f.write(f'Dataset type: {self._data_type}\n')
+                f.write(f'Age range: {age_range}\n')
+                f.write(f'Total subjects: {total_subjects}\n\n')
+
+                # --- integer-binned section (existing behaviour) ---
+                for split in ['train', 'val', 'test']:
+                    if split not in split_age_fnames:
+                        continue
+                    f.write(f'=== {split.upper()} (integer bins, floor(age)) ===\n')
+                    for age_int in range(age_lower, age_upper + 1):
+                        fnames = split_age_fnames[split].get(age_int, [])
+                        f.write(f'Age {age_int}: count={len(fnames)}\n')
+                        if fnames:
+                            f.write('  fnames: ' + ', '.join(str(x) for x in fnames) + '\n')
+                    f.write('\n')
+
+                # --- decimal-age section (exact ages, arbitrary counts) ---
+                for split in ['train', 'val', 'test']:
+                    if split not in split_decimal_fnames:
+                        continue
+                    f.write(f'=== {split.upper()} (exact decimal ages) ===\n')
+                    # sort by age
+                    for age_key in sorted(split_decimal_fnames[split].keys()):
+                        fnames = split_decimal_fnames[split][age_key]
+                        f.write(f'Age {age_key:.3f}: count={len(fnames)}\n')
+                        f.write('  fnames: ' + ', '.join(str(x) for x in fnames) + '\n')
+                    f.write('\n')
+
+            print(f"Wrote age/split summary to {storage_path}")
+
+    # create age distribution graph of all data 
+
+        # age_range = self._config['data']['dataset_age_range']
+        # age_lower, age_upper = map(int, age_range.split('-'))
 
         storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_age_distribution_{age_range}.png')
 
