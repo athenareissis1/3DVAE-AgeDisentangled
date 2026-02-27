@@ -6,12 +6,19 @@ data:
   # dataset_path: /raid/compass/athena/data/DATA_BABIES_FACES
   # dataset_metadata_path: preprocessing_data/BABIES_faces_metadata.csv
       ###### UNIFIED DATASET #######
+  # template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
+  # precomputed_path: precomputed
+  # dataset_type: faces_babies_faces_combined 
+  # # dataset_path: /raid/compass/athena/data/unified_normals_dataset
+  # dataset_path: /raid/compass/athena/data/smooth_unified_normals_dataset 
+  # dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
+        ###### FRIDAY UNIFIED DATASET #######
   template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
   precomputed_path: precomputed
-  dataset_type: faces_babies_faces_combined 
-  # dataset_path: /raid/compass/athena/data/unified_normals_dataset
-  dataset_path: /raid/compass/athena/data/smooth_unified_normals_dataset 
-  dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
+  dataset_type: faces_babies_faces_combined_friday
+  dataset_path: /raid/compass/athena/data/friday/smooth_tri_friday_unified_meshes
+  # dataset_path: /raid/compass/athena/data/friday/friday_unified_meshes
+  dataset_metadata_path: preprocessing_data/friday_all_datasets.csv 
       ###### SYNDROMIC/NON-SYNDROMIC DATASET #######
   # template_path: preprocessing_data/faces_colour_template.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
   # precomputed_path: precomputed
@@ -112,7 +119,7 @@ model:
   mi_loss: False #True
   adversarial_loss: False #True                                                        # if True, adversarial loss is used
   adversarial_loss_latent: True
-  conditional_vae: True
+  conditional_vae: False #True
   cycle_consistency: False #True
   disease_classification: False #True
 

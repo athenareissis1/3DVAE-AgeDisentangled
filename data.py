@@ -17,7 +17,7 @@ import torch
 import pymeshlab as ml
 
 
-def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove):
+def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, test=True):
     """
     Opens a mesh file, deletes vertices based on the given indices, and saves the modified mesh.
 
@@ -30,6 +30,8 @@ def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove):
     """
     # Load the mesh
     mesh = trimesh.load(mesh_file)
+    # take the last part of the path after the last '/' and save it as mesh_file_name
+    mesh_file_name = os.path.basename(mesh_file)
 
     if not isinstance(vertex_indices_to_remove, np.ndarray):
         vertex_indices_to_remove = np.array(vertex_indices_to_remove)
@@ -61,13 +63,25 @@ def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove):
     modified_mesh = trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
 
     # Save the modified mesh
-    modified_mesh_path = os.path.join("/raid/compass/athena/data/unified_normals_dataset/" + os.path.basename(mesh_file))
-    modified_mesh.export(modified_mesh_path)
+    # modified_mesh_path = os.path.join(f"/raid/compass/athena/data/{dataset}/" + os.path.basename(mesh_file))
+    # modified_mesh.export(modified_mesh_path)
+
+    # if folder 'remove_triangle_tests' does not exist, create it
+    if test and not os.path.exists("remove_triangle_tests"):
+        os.makedirs("remove_triangle_tests")
+
+    if test:
+        modified_mesh.export(f"remove_triangle_tests/{mesh_file_name}")
+    else:
+        modified_mesh_path = os.path.join(f"/raid/compass/athena/data/smooth_{dataset}/{mesh_file_name}")
+        # if not os.path.exists(modified_mesh_path):
+        #     os.makedirs(modified_mesh_path)
+        modified_mesh.export(modified_mesh_path)
 
     # print(f"Modified mesh saved to: {modified_mesh_path}")
 
 # Process the first 40 meshes in the specified folder
-def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove, max_files=12885):
+def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove, dataset):
     """
     Processes the first `max_files` meshes in a folder, removing specified vertices.
 
@@ -85,10 +99,49 @@ def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove,
     ]
 
     # Process the first `max_files` meshes
-    for i, mesh_file in enumerate(mesh_files[:max_files]):
-        delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove)
+    for i, mesh_file in enumerate(mesh_files):
+        base = os.path.basename(mesh_file)
+
+        if base == "f__1.obj":
+            continue
+        if base.startswith("._"):
+            continue
+        else:
+            delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, test=False)
 
     
+def verticies_difference(template_file, mesh_file):
+    """
+    Check the number assigned to the vertices in two meshes and print the difference.
+
+    Parameters:
+        template_file (str): Path to the template mesh file.
+        mesh_file (str): Path to the mesh file to compare.
+
+    Returns:
+        list: List of vertex indices that are in `mesh` but not in `template`.
+    """
+    # Load the meshes
+    template = trimesh.load(template_file)
+    mesh = trimesh.load(mesh_file)
+
+    # Extract vertices
+    template_vertices = template.vertices
+    mesh_vertices = mesh.vertices
+    print(f"Template vertices: {len(template_vertices)}, Mesh vertices: {len(mesh_vertices)}")
+
+    # Find the difference in vertices
+    template_set = set(map(tuple, template_vertices))
+    mesh_set = set(map(tuple, mesh_vertices))
+
+    extra_vertices = list(mesh_set - template_set)
+
+    # Find the indices of the extra vertices in the mesh
+    extra_indices = [i for i, vertex in enumerate(mesh_vertices) if tuple(vertex) in extra_vertices]
+
+    print(f"Extra vertices in mesh: {extra_indices}")
+    return extra_indices
+
 
 def remove_files_with_keyword(directory):
     """
@@ -177,7 +230,7 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
     """
 
     # if "unified" in folder_path:
-    if dataset_type == "combined":
+    if dataset_type == 'combined' or dataset_type == 'friday_combined':
         gn = (26021, 0.0978797972202301, 0.736789166927337)
         go_left = (31596, 0.14787405729293823, 0.204847782850265)
         go_right = (13220, 0.4579116106033325, 0.14548911154270172)
@@ -186,7 +239,7 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
         zy_left = (30477, 0.23432278633117676, 0.5406232476234436)
         zy_right = (3468, 0.6796667575836182, 0.24974024295806885) 
 
-    # else if dataset_type = "not-combined":
+    # else if dataset_type = "not_combined":
     else:
         gn = (53157, 0.3662373423576355, 0.5330255627632141)
         go_left = (54815, 0.35922741889953613, 0.6188949346542358)
@@ -210,7 +263,7 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
         template_faces = trimesh.load_mesh(template_path).faces
 
     distances = {}
-    for i in range(mesh_files.size(0)):
+    for i in range(len(mesh_files)):
         if reconstructions is None:
             mesh = trimesh.load(mesh_files[i])
         else:
@@ -246,7 +299,7 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
     return distances
 
 
-def add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory):
+def add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory, dataset_metadata_path):
     """
     Reads the CSV file 'measurements/combined_distances.csv', calculates proportions for each row based on
     specified proportion names, and adds the proportions to the CSV file in the format 1:x. Also adds age information
@@ -254,11 +307,7 @@ def add_proportions_age_gender_to_csv(folder_path, dataset_type, output_director
     """
     proportions_names = ["n-sto:n-gn", "n-sto:sto-gn", "sto-gn:n-gn", "zy_right-zy_left:go-right-go-left"]
 
-    if dataset_type == "combined":
-        metadata_path = os.path.join("preprocessing_data", "combined_datasets_ages.csv")
-    else:
-        metadata_path = os.path.join("preprocessing_data", "BABIES_faces_metadata.csv")
-    metadata_df = pd.read_csv(metadata_path)
+    metadata_df = pd.read_csv(dataset_metadata_path)
 
     input_csv_path = os.path.join(output_directory, f"{dataset_type}_distances.csv")
     output_csv_path = os.path.join(output_directory, f"{dataset_type}_distances_with_proportions_age_gender.csv")
@@ -348,11 +397,13 @@ def distance_proportion_averages(dataset_type, output_directory):
 
 def smooth_mesh(folder_path, dataset, file_name='1216.obj', smooth=1, test=True):
 
-    # file_name = '1216.obj'
+    # file_name = 'f_1520.obj'
     # smooth = 1
 
-    # combine folder_path with '1.obj'
-    mesh = folder_path + dataset + f'/{file_name}'
+    # combine folder_path with file_name
+    mesh = folder_path + f'/{file_name}'
+    # make dataset_path by splitting by / and removing the last one
+    dataset_path = os.path.dirname(folder_path)
 
     ms = ml.MeshSet()
     ms.load_new_mesh(mesh)
@@ -368,27 +419,26 @@ def smooth_mesh(folder_path, dataset, file_name='1216.obj', smooth=1, test=True)
         ms.save_current_mesh(f"smooth_tests/{file_name}")
     else:
         # check if the folder exists, if not create it
-        if not os.path.exists(os.path.join(folder_path, 'smooth_unified_normals_dataset')):
-            os.makedirs(os.path.join(folder_path, 'smooth_unified_normals_dataset'))
-        ms.save_current_mesh(os.path.join(folder_path, 'smooth_unified_normals_dataset', f"{file_name}"))
+        if not os.path.exists(os.path.join(dataset_path, f'smooth_{dataset}')):
+            os.makedirs(os.path.join(dataset_path, f'smooth_{dataset}'))
+        ms.save_current_mesh(os.path.join(dataset_path, f'smooth_{dataset}', f"{file_name}"))
 
-def smooth_dataset(folder_path, dataset, dataset_type):
+def smooth_dataset(folder_path, dataset_metadata_path, dataset):
 
-    dataset_folder_path = folder_path + dataset
+    dataset_folder_path = folder_path
     mesh_files = [
+        # os.path.join(dataset_folder_path, f) for f in os.listdir(dataset_folder_path)
+        # if f.endswith(('.ply', '.obj', '.stl'))]
         os.path.join(dataset_folder_path, f) for f in os.listdir(dataset_folder_path)
-        if f.endswith(('.ply', '.obj', '.stl'))]
-    
-    if dataset_type == "combined":
-        metadata_path = os.path.join("preprocessing_data", "combined_datasets_ages.csv")
-    else:
-        metadata_path = os.path.join("preprocessing_data", "BABIES_faces_metadata.csv")
-    metadata = pd.read_csv(metadata_path)[['id', 'Dataset']]
+        if f.endswith(('.obj')) and not f.startswith('._')]
+
+    metadata = pd.read_csv(dataset_metadata_path)[['id', 'Dataset']]
 
     for i, mesh_file in enumerate(mesh_files):
 
         file_name = os.path.basename(mesh_file)
-        origin = metadata.loc[metadata['id'] == int(file_name.split('.')[0]), 'Dataset'].values[0]
+        # origin = metadata.loc[metadata['id'] == int(file_name.split('.')[0]), 'Dataset'].values[0]
+        origin = metadata.loc[metadata['id'] == file_name.split('.')[0], 'Dataset'].values[0]
 
         if origin == 'LYHM':
             smooth_factor = 2
@@ -403,40 +453,91 @@ def smooth_dataset(folder_path, dataset, dataset_type):
 
         smooth_mesh(folder_path, dataset, file_name=file_name, smooth=smooth_factor, test=False)
 
+def obj_to_ply(obj_folder_path, ply_folder_path, metadata_path):
+    """
+    Converts all mesh files in obj_folder_path from OBJ format to PLY format by loading and exporting the mesh,
+    but only for meshes with ages between 0-17 years.
+
+    Parameters:
+        obj_folder_path (str): Path to the input OBJ mesh files.
+        ply_folder_path (str): Path to the output PLY mesh files.
+        metadata_path (str): Path to the CSV file containing metadata with 'id' and 'AgeYears' columns.
+
+    """
+    # Load metadata and filter for ages between 0-17
+    metadata = pd.read_csv(metadata_path)
+    valid_ids = metadata[(metadata['AgeYears'] >= 0) & (metadata['AgeYears'] <= 17)]['id'].astype(str).tolist()
+
+    # Ensure the output folder exists
+    if not os.path.exists(ply_folder_path):
+        os.makedirs(ply_folder_path)
+
+    converted_count = 0  # Counter for converted files
+
+    # Iterate through all OBJ files in the input folder
+    for file_name in os.listdir(obj_folder_path):
+        if file_name.endswith('.obj'):
+            file_id = file_name.replace('.obj', '')
+            if file_id in valid_ids:
+                obj_file_path = os.path.join(obj_folder_path, file_name)
+                ply_file_path = os.path.join(ply_folder_path, file_name.replace('.obj', '.ply'))
+
+                try:
+                    # Load the OBJ file as a mesh
+                    mesh = trimesh.load(obj_file_path)
+
+                    # Export the mesh to PLY format
+                    mesh.export(ply_file_path)
+
+                    converted_count += 1
+                    print(f"COUNT: {converted_count}")
+                    # print(f"Converted {file_name} to {ply_file_path} in PLY format.")
+                except Exception as e:
+                    print(f"Failed to convert {file_name}: {e}")
+
+    print(f"Total files converted: {converted_count}")
 
 # Example usage
 if __name__ == "__main__":
 
-    folder_path = "/raid/compass/athena/data/"
+    # folder_path = "/raid/compass/athena/data/"
 
-    dataset = "unified_normals_dataset"
-    dataset_type = "combined"
+    # dataset = "unified_normals_dataset"
+    # dataset_type = "combined"
+    dataset = "friday/smooth_tri_friday_unified_meshes"
+    dataset_type = "frday_combined"
+    metadata_filename = "friday_all_datasets.csv"
     reconstructions = None
     mesh_names = None
     template_path = None
     output_directory = "measurements"
 
     # dataset = "DATA_BABIES_FACES" 
-    # dataset_type = "not-combined"
+    # dataset_type = "not_combined"
     # reconstructions = None
     # mesh_names = None
     # template_path = None
     # output_directory = "measurements"
 
-    # folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
+    dataset_folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
+    dataset_metadata_path = f"preprocessing_data/{metadata_filename}"
         
-    # vertices_to_remove = [6945, 6946, 16087]   # Replace with the indices of vertices to remove
+    # vertices_to_remove = [6945, 6946, 16087]   # Replace with the indices of vertices to remove # was [6945, 6946, 16087] 
 
-    # delete_vertices_for_all_to_new_folder(folder_path, vertices_to_remove, max_files=12885)
+    # delete_vertices_for_all_to_new_folder(dataset_folder_path, vertices_to_remove, dataset)
+    # delete_vertices_for_single_mesh(f"/raid/compass/athena/data/{dataset}/f_2.obj", vertices_to_remove, dataset)
+    # verticies_difference("preprocessing_data/face_combined_9_features.ply", f"/raid/compass/athena/data/{dataset}/f_2.obj")
+    # verticies_difference("/raid/compass/athena/data/unified_normals_dataset/1.obj", f"/raid/compass/athena/data/{dataset}/f_1.obj")
 
-    # delete_vertices_for_single_mesh("/raid/compass/athena/data/unified_normals_dataset_with_error_trianges/1124.obj", vertices_to_remove)
-    
-    # remove_files_with_keyword(folder_path)
+    # remove_files_with_keyword(dataset_folder_path)
 
     #### RUN
-    # calculate_distances_in_folder(folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
-    # add_proportions_age_gender_to_csv(folder_path, dataset_type, output_directory)
-    # distance_proportion_averages(dataset_type, output_directory)
+    calculate_distances_in_folder(dataset_folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
+    add_proportions_age_gender_to_csv(dataset_folder_path, dataset_type, output_directory, dataset_metadata_path)
+    distance_proportion_averages(dataset_type, output_directory)
 
-    # smooth_mesh(folder_path, dataset)
-    # smooth_dataset(folder_path, dataset, dataset_type)
+    # smooth_mesh(dataset_folder_path)
+    # smooth_dataset(dataset_folder_path, dataset_metadata_path, dataset)
+
+    # ply_folder_path = "/raid/compass/athena/data/friday/PLY_smooth_tri_friday_unified_meshes"
+    # obj_to_ply(dataset_folder_path, ply_folder_path, dataset_metadata_path)

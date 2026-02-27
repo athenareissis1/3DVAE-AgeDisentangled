@@ -407,7 +407,11 @@ class MeshInMemoryDataset(InMemoryDataset):
             file_id = fname.split("_")[0].lstrip('0') 
 
         if 'combined' in str(self._config_data['dataset_type']):
-            file_id = int(file_id)
+            if 'friday' in str(self._config_data['dataset_type']):
+                # file_id = file_id.split('f', 1)[-1]
+                file_id = fname.split('.', 1)[0]
+            else:
+                file_id = int(file_id)
         
         return file_id 
 
