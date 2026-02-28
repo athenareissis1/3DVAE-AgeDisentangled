@@ -419,14 +419,21 @@ class ModelManager(torch.nn.Module):
         for k in self.loss_keys:
             self._losses[k] /= value
 
-    def log_losses(self, writer, epoch, phase='train'):
+    def log_losses(self, log_directory, epoch, phase='train'):
         for k in self.loss_keys:
             loss = self._losses[k]
             loss = loss.item() if torch.is_tensor(loss) else loss
-            writer.add_scalar(
-                phase + '/' + str(k), loss, epoch + 1)
+            # writer.add_scalar(
+            #     phase + '/' + str(k), loss, epoch + 1)
 
-    def log_images(self, in_data, writer, epoch, normalization_dict=None,
+            log_txt_path = os.path.join(log_directory, f'{k}_losses.txt')
+            if not os.path.exists(log_txt_path):
+                with open(log_txt_path, 'w') as f:
+                    f.write('epoch,phase,loss_name,loss_value\n')
+            with open(log_txt_path, 'a') as f:
+                f.write(f'{epoch + 1},{phase},{k},{loss}\n')
+
+    def log_images(self, in_data, log_directory, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
         gt_meshes = in_data.x.to(self._rend_device)
         out_meshes = self.forward(in_data.to(self.device))[0]
@@ -446,7 +453,10 @@ class ModelManager(torch.nn.Module):
                                      error_max_scale)
         log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
-        writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
+        # writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
+        # save image to log directory
+        log_img_path = os.path.join(log_directory, f'{phase}_epoch_{epoch+1}.png')
+        ToPILImage()(log).save(log_img_path)
 
     def _create_renderer(self, img_size=256):
         raster_settings = RasterizationSettings(image_size=img_size)

@@ -6,6 +6,7 @@ import trimesh
 import torch
 
 import numpy as np
+import pandas as pd
 
 from abc import abstractmethod
 from torch.utils.data.dataloader import default_collate
@@ -137,7 +138,7 @@ class MeshCollater:
                 f"DataLoader found invalid type: {type(data_list[0])}. "
                 f"Expected torch_geometric.data.Data instead")
 
-        keys = [set(data.keys) for data in data_list]
+        keys = [set(data.keys()) for data in data_list]
         keys = list(set.union(*keys))
         batched_data = Data()
         for key in keys:
@@ -302,6 +303,17 @@ class MeshInMemoryDataset(InMemoryDataset):
         self.mean = normalization_dict['mean']
         self.std = normalization_dict['std']
 
+        age_metadata_path = 'preprocessing_data/friday_all_datasets.csv'
+        self._age_metadata = pd.read_csv(age_metadata_path)
+
+        age_norm_path = 'precomputed/normalise_age_friday.pkl'
+        try:
+            with open(age_norm_path, 'rb') as file:
+                self._age_mean, self._age_std = \
+                    pickle.load(file)
+        except FileNotFoundError:
+            print("Could not find age normalise stats file")
+
         super(MeshInMemoryDataset, self).__init__(
             root, transform, pre_transform)
 
@@ -367,7 +379,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename, show=False):
-        mesh_path = os.path.join(self._root, filename + '.ply')
+        mesh_path = os.path.join(self._root, filename) # + '.ply')
         mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
@@ -401,14 +413,22 @@ class MeshInMemoryDataset(InMemoryDataset):
         return normalization_dict
 
     def _process_set(self, files_list):
+
         dataset = []
+
         for fname in tqdm.tqdm(files_list):
             mesh_verts = self.load_mesh(fname)
 
             if self._normalize:
                 mesh_verts = (mesh_verts - self.mean) / self.std
 
-            data = Data(x=mesh_verts)
+            file_id = fname.replace('.ply', '')
+
+            age = self._age_metadata.loc[self._age_metadata['id'] == file_id, 'age'].values[0]
+
+            norm_age = age - self._age_mean / self._age_std
+
+            data = Data(x=mesh_verts, age=age, norm_age=norm_age, fname=file_id)
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)

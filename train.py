@@ -3,7 +3,7 @@ import argparse
 import shutil
 import tqdm
 import torch.nn
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 
 import utils
 from data_generation_and_loading import FaceGenerator, BodyGenerator
@@ -28,7 +28,7 @@ else:
 output_directory = os.path.join(opts.output_path + "/outputs", model_name)
 checkpoint_dir = utils.prepare_sub_folder(output_directory)
 
-writer = SummaryWriter(output_directory + '/logs')
+# writer = SummaryWriter(output_directory + '/logs')
 shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml'))
 
 if not torch.cuda.is_available():
@@ -63,17 +63,22 @@ if opts.resume:
 else:
     start_epoch = 0
 
+# in outputs folder, under experiment name, create a log folder that will contain a loss.txt file
+log_directory = os.path.join(output_directory + "/logs")
+if not os.path.exists(log_directory):
+    os.makedirs(log_directory)
+
 for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     manager.run_epoch(train_loader, device, train=True)
-    manager.log_losses(writer, epoch, 'train')
+    manager.log_losses(log_directory, epoch, 'train')
 
     manager.run_epoch(validation_loader, device, train=False)
-    manager.log_losses(writer, epoch, 'validation')
+    manager.log_losses(log_directory, epoch, 'validation')
 
     if (epoch + 1) % config['logging_frequency']['tb_renderings'] == 0:
-        manager.log_images(train_visualization_batch, writer, epoch,
+        manager.log_images(train_visualization_batch, log_directory, epoch,
                            normalization_dict, 'train', error_max_scale=2)
-        manager.log_images(validation_visualization_batch, writer, epoch,
+        manager.log_images(validation_visualization_batch, log_directory, epoch,
                            normalization_dict, 'validation', error_max_scale=2)
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)

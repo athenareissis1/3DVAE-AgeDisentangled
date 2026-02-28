@@ -24,3 +24,15 @@ meshes2fit/
 precomputed_bodies/
 
 precomputed_cvpr/
+
+.neptune/
+
+measurements/
+
+logging.yaml
+
+preprocessing_data/
+
+.vscode/
+
+old_precomputed/

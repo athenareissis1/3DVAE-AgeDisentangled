@@ -19,10 +19,16 @@ from pytorch3d.ops.knn import knn_points
 
 from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
 
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from scipy import stats
+import utils
+from sap_score import _compute_sap 
+
 
 class Tester:
     def __init__(self, model_manager, norm_dict,
-                 train_load, test_load, out_dir, config):
+                 train_load, val_loader, test_load, out_dir, config):
         self._manager = model_manager
         self._manager.eval()
         self._device = model_manager.device
@@ -31,6 +37,7 @@ class Tester:
         self._out_dir = out_dir
         self._config = config
         self._train_loader = train_load
+        self._val_loader = val_loader
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
         self.latent_stats = self.compute_latent_stats(train_load)
@@ -45,6 +52,9 @@ class Tester:
             1255, 9881, 32055, 45778, 5355, 27515, 18482, 33691]
 
     def __call__(self):
+
+        """""
+
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
 
@@ -55,23 +65,32 @@ class Tester:
         self.random_generation_and_rendering(n_samples=16)
         self.random_generation_and_save(n_samples=16)
         self.interpolate()
-        if self._config['data']['dataset_type'] == 'faces':
-            self.direct_manipulation()
+        # if self._config['data']['dataset_type'] == 'faces':
+        #     self.direct_manipulation()
 
         # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048)
-        recon_errors = self.reconstruction_errors(self._test_loader)
-        train_set_diversity = self.compute_diversity_train_set()
-        diversity = self.compute_diversity()
-        specificity = self.compute_specificity()
-        metrics = {'recon_errors': recon_errors,
-                   'train_set_diversity': train_set_diversity,
-                   'diversity': diversity,
-                   'specificity': specificity}
+        # self.evaluate_gen(self._test_loader, n_sampled_points=2048)
+        # recon_errors = self.reconstruction_errors(self._test_loader)
+        # train_set_diversity = self.compute_diversity_train_set()
+        # diversity = self.compute_diversity()
+        # specificity = self.compute_specificity()
+        # metrics = {'recon_errors': recon_errors,
+        #            'train_set_diversity': train_set_diversity,
+        #            'diversity': diversity,
+        #            'specificity': specificity}
 
-        outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
-        with open(outfile_path, 'w') as outfile:
-            json.dump(metrics, outfile)
+        # outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
+        # with open(outfile_path, 'w') as outfile:
+        #     json.dump(metrics, outfile)
+
+        """""
+
+        self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+
+        # feature dis image 
+        # feature dis graph
+        # t-sne test on latents colored by age
+        # maybe??? MLP age prediction from latents ??
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -649,7 +668,7 @@ class Tester:
         v_1 = None
         distances = [0]
         for i, fname in enumerate(test_list):
-            mesh_path = os.path.join(meshes_root, fname + '.ply')
+            mesh_path = os.path.join(meshes_root, fname) # + '.ply')
             mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
             mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                       requires_grad=False, device='cpu')
@@ -660,7 +679,7 @@ class Tester:
                     self._manager.compute_mse_loss(v_1, mesh_verts).item())
 
         m_2_path = os.path.join(
-            meshes_root, test_list[np.asarray(distances).argmax()] + '.ply')
+            meshes_root, test_list[np.asarray(distances).argmax()]) # + '.ply')
         m_2 = trimesh.load_mesh(m_2_path, 'ply', process=False)
         v_2 = torch.tensor(m_2.vertices, dtype=torch.float, requires_grad=False)
 
@@ -740,12 +759,236 @@ class Tester:
         res = torch.stack(ls)
         return res.t()
 
+    ##### NEW TESTS #####
+
+    def process_data(self, loader, datasets):
+
+        """
+        
+        This function processes the data from the loader and returns the feature latents, age latents and ground truth ages seperately.
+    
+        """
+
+        all_latents_list = []
+        gt_age_norm_list = []
+        fname_list = []
+
+        for batch in tqdm.tqdm(loader):
+
+            gt_ages_norm_batch = batch.norm_age
+            file_name = batch.fname
+
+            if datasets is not None:
+                for fname in file_name:
+                    if 'friday' in self._data_type:
+                        dataset_name = datasets[datasets['id'] == fname]['Dataset'].values[0] 
+                    elif 'combined' in self._data_type:
+                        dataset_name = datasets[datasets['id'] == int(fname)]['Dataset'].values[0]
+                    else:
+                        dataset_name = datasets[datasets['id'] == fname]['Dataset'].values[0] 
+                    fname_list.append(dataset_name)
+
+            data = batch.x[self._manager.batch_diagonal_idx, ::]
+
+            z = self._manager.encode(data.to(self._device)).detach()
+
+            for i in range(data.shape[0]):
+                all_latents_list.append(z[i])
+                gt_age_norm_list.append(gt_ages_norm_batch[i])
+
+        all_latents = torch.stack(all_latents_list).detach().cpu().numpy()
+        gt_ages_norm = torch.stack(gt_age_norm_list).detach().cpu().numpy().reshape(-1, 1)
+    
+        return all_latents, gt_ages_norm, fname_list
+    
+    ##### STATISTICAL TESTS #####
+
+    def compute_r2(self, X_tr, Y_tr, X_te, Y_te):
+
+        """
+        Compute R², works for 1 or many age latents.
+
+        """
+        
+        model = LinearRegression()
+        model.fit(X_tr, Y_tr)
+        Y_pred = model.predict(X_te)
+        r2 = r2_score(Y_te, Y_pred, multioutput='variance_weighted')
+
+        return float(r2)
+
+    
+    def stats_tests_correlation(self, train_loader, val_loader, test_loader):
+
+        """
+        Perform statistical tests to check if age is disentangled from feature latents.
+
+        """
+
+        train_all_latents, train_gt_age_norm, _ = self.process_data(train_loader, datasets=None)
+        val_all_latents, val_gt_age_norm, _ = self.process_data(val_loader, datasets=None)
+        test_all_latents, test_gt_age_norm, _ = self.process_data(test_loader, datasets=None)
+
+        all_latents_train_val = np.concatenate((train_all_latents, val_all_latents), axis=0)
+        # identity_latents_train_val = np.concatenate((train_identity_latents, val_identity_latents), axis=0)
+        # identity_latents_test = test_identity_latents
+        # age_latents_train_val = np.concatenate((train_age_latents, val_age_latents), axis=0)
+        # age_latents_test = test_age_latents
+        gt_ages_train_val = np.concatenate((train_gt_age_norm, val_gt_age_norm), axis=0)
+        gt_ages_test = test_gt_age_norm
+
+        # ------------------------------------------------------------------
+        # 1) Cross-latent global SAP (age in id / id in age)
+        # ------------------------------------------------------------------
+
+        # sap_score = _compute_sap(identity_latents_train_val.T, age_latents_train_val.T, identity_latents_test.T, age_latents_test.T, continuous_factors=True)
+        # print("SAP (age latents info in identity latents):", sap_score)
+
+        # # using r2 here now for comparisons as others only have single age latent
+        # r2_id_given_age = self.compute_r2(age_latents_train_val, identity_latents_train_val, age_latents_test, identity_latents_test)
+        # print(f"R² (identity latents info in age latent): {r2_id_given_age:.3f}")
+
+        # ----------------------------------------------------------------------------
+        # 2) Proper SAP: identity latents vs *ground-truth age* (using diagonal only)
+        # ----------------------------------------------------------------------------
+
+        sap_age_in_id_gt = _compute_sap(
+            all_latents_train_val.T,       
+            gt_ages_train_val.T,    
+            test_all_latents.T,             
+            gt_ages_test.T,           
+            continuous_factors=True,
+        )
+        print("SAP (GT age in identity (all) latents):", sap_age_in_id_gt)
+
+        # r2_age_vs_latent = self.compute_r2(age_latents_train_val, gt_ages_train_val, age_latents_test, gt_ages_test)
+        # print(f"R² (GT age in age latent): {r2_age_vs_latent:.3f}")
+
+        # ------------------------------------------------------------------
+        # 3) HIPPOCAMPUS PAPER SAP implementation
+        # ------------------------------------------------------------------
+
+        # === Disentanglement diagnostics (age only) ===
+        # ages_np = gt_ages_train_val.reshape(-1)     
+        # lat_np = all_latents_train_val.cpu().numpy()
+        ages_np = gt_ages_train_val[:, 0]
+        lat_np = all_latents_train_val 
+
+        # Per-dimension Pearson correlation with gt age
+        corr_per_dim = [stats.pearsonr(ages_np, lat_np[:, d])[0] for d in range(lat_np.shape[1])]
+
+        # # Choose the dimension most aligned with gt age (by absolute correlation)
+        # age_dim = int(np.argmax(np.abs(corr_per_dim)))
+        # pcc_age = corr_per_dim[age_dim]
+
+        # SAP score for age (continuous factor)
+        sap_score = utils.sap(factors=ages_np[:, None], codes=lat_np, continuous_factors=True, regression=True)
+
+        # How much age leaks into the other latent dims (max |corr| excluding age_dim)
+        leakage_age_into_others = 0.0
+        age_dim = self._config['model']['latent_size'] # get it to look at all latents
+        if lat_np.shape[1] > 1:
+            leakage_age_into_others = max(abs(c) for i, c in enumerate(corr_per_dim) if i in range(age_dim))
+
+        print("Per-dim Pearson r (GT_age vs all_latents):", np.round(corr_per_dim, 3))
+        # print(f"GT_age: most age-related latent index: {age_dim} (corr={pcc_age:.3f})")
+        print(f"Hippocampus SAP (GT_age vs all_latents): {sap_score:.3f}")
+        print(f"GT_age leakage into identity (all) latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n")
+
+        # # Log a concise line per model
+        # message = (
+        #     # "Model={:s} | "
+        #     # "Corr_age(dim1)={:.3f} | "
+        #     # "SAP_age={:.3f}"
+        #     "AgeDim={} | "
+        #     "Corr_age={:.3f} | "
+        #     "SAP_age={:.3f} | "
+        #     "Leakage_age_max_other={:.3f}"
+        # ).format(
+        #     # folder_name,
+        #     # pcc,         # correlation between age and latent dim 0
+        #     # sap_score,   # SAP for age (continuous, regression)
+        #     age_dim,
+        #     pcc_age,
+        #     sap_score,
+        #     leakage_age_into_others,
+        # )
+
+        # out_error_fp = base_path / "test_age_scan.txt"
+        # out_error_fp.parent.mkdir(parents=True, exist_ok=True)
+        # print("writing test log to:", out_error_fp)
+        # with open(out_error_fp, 'a') as log_file:
+        #     log_file.write(f"{message}\n")
+                
+
+        # === FEATURE-LEVEL R_2 TESTS ===
+        # ------------------------------------------------------------------
+        # 4) Feature-level R² (age in id / id in age) - train linear regression models for each feature block and compute R² on test set
+        # ------------------------------------------------------------------
+
+        # feature_r2_results_id_in_age = {}
+        # feature_r2_results_age_in_id = {}
+        # features = ["Temporal", "Eyes", "Cheekbones", "Cheeks", "Jaw", "Forehead", "Chin", "Lips", "Nose"]
+
+        # # Assuming 45 id latents (5 per feature) and 9 age latents
+        # num_features = age_latents_train_val.shape[1]
+        # id_latent_size = identity_latents_train_val.shape[1]
+        # id_per_feature = id_latent_size // num_features
+
+        # model_age_in_id = LinearRegression()
+        # model_id_in_age = LinearRegression()
+
+        # for i in range(num_features):
+        #     id_inds = list(range(i * id_per_feature, (i + 1) * id_per_feature))
+        #     age_ind = i
+
+        #     feature_name = features[i]
+        #     id_train_sub = identity_latents_train_val[:, id_inds]
+        #     id_test_sub = identity_latents_test[:, id_inds]
+        #     age_train_sub = age_latents_train_val[:, age_ind]
+        #     age_test_sub = age_latents_test[:, age_ind]
+
+        #     age_train_sub = age_train_sub.reshape(-1, 1)
+        #     age_test_sub = age_test_sub.reshape(-1, 1)
+
+        #     # Fit the model for "age in identity"
+        #     model_age_in_id.fit(id_train_sub, age_train_sub)
+        #     r2 = r2_score(age_test_sub, model_age_in_id.predict(id_test_sub), multioutput='variance_weighted')
+        #     feature_r2_results_age_in_id[feature_name] = r2
+
+        #     # Fit the model for "identity in age"
+        #     model_id_in_age.fit(age_train_sub, id_train_sub)
+        #     r2 = r2_score(id_test_sub, model_id_in_age.predict(age_test_sub), multioutput='variance_weighted')
+        #     feature_r2_results_id_in_age[feature_name] = r2
+
+        # # print("Feature-level SAP results (age in id):", feature_sap_results_age_in_id)
+        # # print("Feature-level DCI results (id in age):", feature_dci_results_id_in_age)
+        # print("Feature-level R² results (age in id):", feature_r2_results_age_in_id)
+        # print("Feature-level R² results (id in age):", feature_r2_results_id_in_age)
+        # self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
+        # self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age
+    
+
 
 if __name__ == '__main__':
     import argparse
     import utils
     from data_generation_and_loading import get_data_loaders
     from model_manager import ModelManager
+
+    # ##---------------------------------------
+
+
+    # # replace all .obj with .ply in data_split.json 
+    # with open(os.path.join('precomputed', 'data_split.json'), 'r') as fp:
+    #     data_split = json.load(fp)
+    # for split in ['train', 'val', 'test']:
+    #     data_split[split] = [fname.replace('.obj', '.ply') for fname in
+    #                             data_split[split]]
+    # with open(os.path.join('precomputed', 'data_split.json'), 'w') as fp:
+    #     json.dump(data_split, fp)
+
+    # ##---------------------------------------
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--id', type=str, default='none',
@@ -754,6 +997,7 @@ if __name__ == '__main__':
                         help="outputs path")
     opts = parser.parse_args()
     model_name = opts.id
+
 
     output_directory = os.path.join(opts.output_path + "/outputs", model_name)
     checkpoint_dir = os.path.join(output_directory, 'checkpoints')
@@ -772,10 +1016,10 @@ if __name__ == '__main__':
         precomputed_storage_path=configurations['data']['precomputed_path'])
     manager.resume(checkpoint_dir)
 
-    train_loader, _, test_loader, normalization_dict = \
+    train_loader, val_loader, test_loader, normalization_dict = \
         get_data_loaders(configurations, manager.template)
 
-    tester = Tester(manager, normalization_dict, train_loader, test_loader,
+    tester = Tester(manager, normalization_dict, train_loader, val_loader, test_loader,
                     output_directory, configurations)
 
     tester()
