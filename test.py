@@ -111,17 +111,17 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # TEST TO RUN (run all on val set then once model is finalised move to test set)
+        # # TEST TO RUN (run all on val set then once model is finalised move to test set)
         # self.per_variable_range_experiments(use_z_stats=False)
         # self.random_generation_and_rendering(n_samples=16)
 
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
-            dataset = self._test_loader # self._val_loader,
+            eval_loader = self._test_loader # self._val_loader,
             # self.dataset_split()
-            # self.age_encoder_decoder_accuracy(self._train_loader, dataset)
-            # self.age_prediction_MLP(self._train_loader, dataset)
-            # self.age_latent_changing(dataset)
-            # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+            self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
+            self.age_prediction_MLP(self._train_loader, eval_loader)
+            self.age_latent_changing(eval_loader)
+            self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
             self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
             # self.proportions(dataset)
             # self.plot_proportions()
@@ -991,7 +991,7 @@ class Tester:
         torch.backends.cudnn.benchmark = False
 
 
-    def age_latent_changing(self, data_loader):
+    def age_latent_changing(self, eval_loader):
 
         """
         
@@ -1016,7 +1016,7 @@ class Tester:
         for i in range(len(age_latent_ranges)):
             age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
 
-        batch = next(iter(data_loader))
+        batch = next(iter(eval_loader))
 
         original_ages = batch.age.numpy()
 
@@ -1166,7 +1166,7 @@ class Tester:
         return gt_feature_ages
 
 
-    def age_encoder_decoder_accuracy(self, train_loader, test_loader):
+    def age_encoder_decoder_accuracy(self, train_loader, eval_loader):
 
         """
         
@@ -1184,7 +1184,7 @@ class Tester:
             if j == 0:
                 data_loader = train_loader
             else:
-                data_loader = test_loader
+                data_loader = eval_loader
 
             age_latents_gt = []
             age_preds_encoder = []
@@ -1358,11 +1358,11 @@ class Tester:
         """
         
         This function calculates how many data subjects there are for each age range group and original dataset to understand it's distribution. 
-        
-        It saves the results in a .png.  
+
+        It saves the results in a .png.
 
         Output: three graphs:
-            1. distribution of age 
+            1. distribution of age
             2. age split for train, val and test sets
             3. original dataset split
         
@@ -1675,7 +1675,7 @@ class Tester:
 
         # self.log['dataset/distribution_split'].upload(storage_path)
 
-    def age_prediction_MLP(self, train_loader, val_loader):
+    def age_prediction_MLP(self, train_loader, eval_loader):
         """
         This function trains a MLP model to predict the age of the subjects based on the feature latents. 
 
@@ -1684,18 +1684,18 @@ class Tester:
         Output: plot of training loss and scatter plot of predicted age against ground truth age
         """
 
-        train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
-        val_feature_latents, _, val_gt_age, _, _ = self.process_data(val_loader, datasets=None, only_diagonal=True)
+        _, train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
+        _, eval_feature_latents, _, eval_gt_age, _, _ = self.process_data(eval_loader, datasets=None, only_diagonal=True)
 
         sc = StandardScaler()
         train_feature_latents_scaled = sc.fit_transform(train_feature_latents)
-        val_feature_latents_scaled = sc.transform(val_feature_latents)
+        eval_feature_latents_scaled = sc.transform(eval_feature_latents)
 
         train_feature_latents = torch.tensor(train_feature_latents_scaled, dtype=torch.float32)
-        val_feature_latents = torch.tensor(val_feature_latents_scaled, dtype=torch.float32)
+        eval_feature_latents = torch.tensor(eval_feature_latents_scaled, dtype=torch.float32)
 
         train_gt_age_tensor = torch.tensor(train_gt_age, dtype=torch.float32).view(-1, 1)
-        val_gt_age_tensor = torch.tensor(val_gt_age, dtype=torch.float32).view(-1, 1)
+        eval_gt_age_tensor = torch.tensor(eval_gt_age, dtype=torch.float32).view(-1, 1)
 
         self.set_seed(42)
 
@@ -1758,7 +1758,7 @@ class Tester:
             return predictions.numpy(), mae.item()
 
         train_ages_pred, train_mean_age_diff = evaluate_model(model, train_feature_latents, train_gt_age_tensor)
-        val_ages_pred, val_mean_age_diff = evaluate_model(model, val_feature_latents, val_gt_age_tensor)
+        eval_ages_pred, eval_mean_age_diff = evaluate_model(model, eval_feature_latents, eval_gt_age_tensor)
 
         # Plot the results
         age_range = self._config['data']['dataset_age_range']
@@ -1772,7 +1772,7 @@ class Tester:
 
         # Scatter plot with fixed marker sizes
         plt.scatter(train_gt_age, train_ages_pred, s=base_marker_size, color='yellow', marker='x', label='Train dataset')
-        plt.scatter(val_gt_age, val_ages_pred, s=base_marker_size, color='green', marker='o', label='Validation dataset')
+        plt.scatter(eval_gt_age, eval_ages_pred, s=base_marker_size, color='green', marker='o', label='Eval dataset')
         plt.plot([0, max_age], [0, max_age], 'r--')
 
         # Add title, labels, and text
@@ -1780,12 +1780,12 @@ class Tester:
         plt.xlabel('Ground truth age (years)')
         plt.ylabel('Predicted age (years)')
         plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
-        plt.text(0.25, 0.05, f'Mean absolute difference (val) = {round(val_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.05, f'Mean absolute difference (val) = {round(eval_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
 
         # Fixed marker sizes for legend
         legend_handles = [
             plt.scatter([], [], color='yellow', marker='x', s=base_marker_size, label='Train dataset'),
-            plt.scatter([], [], color='green', marker='o', s=base_marker_size, label='Validation dataset')
+            plt.scatter([], [], color='green', marker='o', s=base_marker_size, label='Eval dataset')
         ]
         plt.legend(handles=legend_handles, loc='upper left')
 
@@ -1811,8 +1811,8 @@ class Tester:
         
         """
 
-        train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
-        val_feature_latents, _, val_gt_age, _, _ = self.process_data(val_loader, datasets=None, only_diagonal=True)
+        _, train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
+        _, val_feature_latents, _, val_gt_age, _, _ = self.process_data(val_loader, datasets=None, only_diagonal=True)
 
         # train_gt_age = mode(train_gt_age, axis=1).mode
         # val_gt_age = mode(val_gt_age, axis=1).mode
@@ -1959,9 +1959,9 @@ class Tester:
         # read csv file
         datasets = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'Dataset'])
 
-        train_feature_latents, train_age_latents, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, only_diagonal=diagonal)
-        val_feature_latents, val_age_latents, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,only_diagonal=diagonal)
-        test_feature_latents, test_age_latents, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,only_diagonal=diagonal)
+        _, train_feature_latents, train_age_latents, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, only_diagonal=diagonal)
+        _, val_feature_latents, val_age_latents, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,only_diagonal=diagonal)
+        _, test_feature_latents, test_age_latents, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,only_diagonal=diagonal)
 
         feature_latents = np.concatenate((train_feature_latents, val_feature_latents, test_feature_latents), axis=0)
         age_latents = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
