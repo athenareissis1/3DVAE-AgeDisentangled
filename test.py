@@ -25,6 +25,14 @@ from scipy import stats
 import utils
 from sap_score import _compute_sap 
 
+from matplotlib.colors import ListedColormap
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
+import torch.nn as nn
+import torch.optim as optim
+import random
+
 
 class Tester:
     def __init__(self, model_manager, norm_dict,
@@ -85,12 +93,12 @@ class Tester:
 
         """""
 
-        self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-
-        # feature dis image 
-        # feature dis graph
-        # t-sne test on latents colored by age
-        # maybe??? MLP age prediction from latents ??
+        self.set_renderings_size(512)
+        self.set_rendering_background_color([1, 1, 1])
+        self.per_variable_range_experiments(use_z_stats=False)
+        # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+        # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+        # self.age_prediction_MLP(self._train_loader, self._test_loader) 
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -236,6 +244,7 @@ class Tester:
         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
                     hue="region", palette=palette)
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
+        plt.savefig(os.path.join(self._out_dir, 'latent_exploration.png'))
 
     def random_latent(self, n_samples, z_range_multiplier=1):
         if self._is_vae:  # sample from normal distribution if vae
@@ -760,8 +769,23 @@ class Tester:
         return res.t()
 
     ##### NEW TESTS #####
+       
+    def set_seed(self, seed):
 
-    def process_data(self, loader, datasets):
+        """
+        
+        This function makes sure all random operation produce the same results each time the code is run.
+        
+        """
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    def process_data(self, loader, dataset):
 
         """
         
@@ -771,35 +795,37 @@ class Tester:
 
         all_latents_list = []
         gt_age_norm_list = []
+        gt_age_list = []
         fname_list = []
+        dataset_list = []
 
         for batch in tqdm.tqdm(loader):
 
             gt_ages_norm_batch = batch.norm_age
-            file_name = batch.fname
+            gt_ages_batch = batch.age
+            fnames_batch = batch.fname
+            mesh_batch = batch.x
+            z_batch = self._manager.encode(mesh_batch.to(self._device)).detach()
 
-            if datasets is not None:
-                for fname in file_name:
-                    if 'friday' in self._data_type:
-                        dataset_name = datasets[datasets['id'] == fname]['Dataset'].values[0] 
-                    elif 'combined' in self._data_type:
-                        dataset_name = datasets[datasets['id'] == int(fname)]['Dataset'].values[0]
-                    else:
-                        dataset_name = datasets[datasets['id'] == fname]['Dataset'].values[0] 
-                    fname_list.append(dataset_name)
+            for i in range(len(fnames_batch)):
+                file_name = fnames_batch[i]
+                if dataset is not None:
+                    ds_row = dataset[dataset['id'] == file_name]
+                    dataset_name = ds_row['Dataset'].values[0]
+                else:
+                    dataset_name = None
 
-            data = batch.x[self._manager.batch_diagonal_idx, ::]
-
-            z = self._manager.encode(data.to(self._device)).detach()
-
-            for i in range(data.shape[0]):
-                all_latents_list.append(z[i])
+                all_latents_list.append(z_batch[i])
                 gt_age_norm_list.append(gt_ages_norm_batch[i])
+                gt_age_list.append(gt_ages_batch[i])
+                fname_list.append(file_name)
+                dataset_list.append(dataset_name)
 
         all_latents = torch.stack(all_latents_list).detach().cpu().numpy()
         gt_ages_norm = torch.stack(gt_age_norm_list).detach().cpu().numpy().reshape(-1, 1)
+        gt_age = torch.stack(gt_age_list).detach().cpu().numpy().reshape(-1, 1)
     
-        return all_latents, gt_ages_norm, fname_list
+        return all_latents, gt_ages_norm, gt_age, fname_list, dataset_list
     
     ##### STATISTICAL TESTS #####
 
@@ -825,15 +851,11 @@ class Tester:
 
         """
 
-        train_all_latents, train_gt_age_norm, _ = self.process_data(train_loader, datasets=None)
-        val_all_latents, val_gt_age_norm, _ = self.process_data(val_loader, datasets=None)
-        test_all_latents, test_gt_age_norm, _ = self.process_data(test_loader, datasets=None)
+        train_all_latents, train_gt_age_norm, _, _, _ = self.process_data(train_loader, dataset=None)
+        val_all_latents, val_gt_age_norm, _, _, _ = self.process_data(val_loader, dataset=None)
+        test_all_latents, test_gt_age_norm, _, _, _ = self.process_data(test_loader, dataset=None)
 
         all_latents_train_val = np.concatenate((train_all_latents, val_all_latents), axis=0)
-        # identity_latents_train_val = np.concatenate((train_identity_latents, val_identity_latents), axis=0)
-        # identity_latents_test = test_identity_latents
-        # age_latents_train_val = np.concatenate((train_age_latents, val_age_latents), axis=0)
-        # age_latents_test = test_age_latents
         gt_ages_train_val = np.concatenate((train_gt_age_norm, val_gt_age_norm), axis=0)
         gt_ages_test = test_gt_age_norm
 
@@ -841,12 +863,7 @@ class Tester:
         # 1) Cross-latent global SAP (age in id / id in age)
         # ------------------------------------------------------------------
 
-        # sap_score = _compute_sap(identity_latents_train_val.T, age_latents_train_val.T, identity_latents_test.T, age_latents_test.T, continuous_factors=True)
-        # print("SAP (age latents info in identity latents):", sap_score)
-
-        # # using r2 here now for comparisons as others only have single age latent
-        # r2_id_given_age = self.compute_r2(age_latents_train_val, identity_latents_train_val, age_latents_test, identity_latents_test)
-        # print(f"R² (identity latents info in age latent): {r2_id_given_age:.3f}")
+        # NO AGE LATENTS
 
         # ----------------------------------------------------------------------------
         # 2) Proper SAP: identity latents vs *ground-truth age* (using diagonal only)
@@ -861,69 +878,33 @@ class Tester:
         )
         print("SAP (GT age in identity (all) latents):", sap_age_in_id_gt)
 
-        # r2_age_vs_latent = self.compute_r2(age_latents_train_val, gt_ages_train_val, age_latents_test, gt_ages_test)
-        # print(f"R² (GT age in age latent): {r2_age_vs_latent:.3f}")
-
         # ------------------------------------------------------------------
         # 3) HIPPOCAMPUS PAPER SAP implementation
         # ------------------------------------------------------------------
 
         # === Disentanglement diagnostics (age only) ===
-        # ages_np = gt_ages_train_val.reshape(-1)     
-        # lat_np = all_latents_train_val.cpu().numpy()
         ages_np = gt_ages_train_val[:, 0]
-        lat_np = all_latents_train_val 
+        lat_np = all_latents_train_val
 
         # Per-dimension Pearson correlation with gt age
         corr_per_dim = [stats.pearsonr(ages_np, lat_np[:, d])[0] for d in range(lat_np.shape[1])]
-
-        # # Choose the dimension most aligned with gt age (by absolute correlation)
-        # age_dim = int(np.argmax(np.abs(corr_per_dim)))
-        # pcc_age = corr_per_dim[age_dim]
 
         # SAP score for age (continuous factor)
         sap_score = utils.sap(factors=ages_np[:, None], codes=lat_np, continuous_factors=True, regression=True)
 
         # How much age leaks into the other latent dims (max |corr| excluding age_dim)
         leakage_age_into_others = 0.0
-        age_dim = self._config['model']['latent_size'] # get it to look at all latents
+        age_dim = 45 # get it to look at all latents
         if lat_np.shape[1] > 1:
             leakage_age_into_others = max(abs(c) for i, c in enumerate(corr_per_dim) if i in range(age_dim))
 
         print("Per-dim Pearson r (GT_age vs all_latents):", np.round(corr_per_dim, 3))
-        # print(f"GT_age: most age-related latent index: {age_dim} (corr={pcc_age:.3f})")
         print(f"Hippocampus SAP (GT_age vs all_latents): {sap_score:.3f}")
-        print(f"GT_age leakage into identity (all) latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n")
-
-        # # Log a concise line per model
-        # message = (
-        #     # "Model={:s} | "
-        #     # "Corr_age(dim1)={:.3f} | "
-        #     # "SAP_age={:.3f}"
-        #     "AgeDim={} | "
-        #     "Corr_age={:.3f} | "
-        #     "SAP_age={:.3f} | "
-        #     "Leakage_age_max_other={:.3f}"
-        # ).format(
-        #     # folder_name,
-        #     # pcc,         # correlation between age and latent dim 0
-        #     # sap_score,   # SAP for age (continuous, regression)
-        #     age_dim,
-        #     pcc_age,
-        #     sap_score,
-        #     leakage_age_into_others,
-        # )
-
-        # out_error_fp = base_path / "test_age_scan.txt"
-        # out_error_fp.parent.mkdir(parents=True, exist_ok=True)
-        # print("writing test log to:", out_error_fp)
-        # with open(out_error_fp, 'a') as log_file:
-        #     log_file.write(f"{message}\n")
-                
+        print(f"GT_age leakage into identity (all) latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n")                
 
         # === FEATURE-LEVEL R_2 TESTS ===
         # ------------------------------------------------------------------
-        # 4) Feature-level R² (age in id / id in age) - train linear regression models for each feature block and compute R² on test set
+        # 4) Feature-level R² (age in id latents) - train linear regression models for each feature block and compute R² on test set
         # ------------------------------------------------------------------
 
         # feature_r2_results_id_in_age = {}
@@ -967,7 +948,246 @@ class Tester:
         # print("Feature-level R² results (id in age):", feature_r2_results_id_in_age)
         # self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
         # self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age
+
+        output_file = os.path.join(self._out_dir, 'dis_stats.txt')
+        with open(output_file, 'w') as f:
+            f.write(f"SAP (GT age in identity (all) latents): {sap_age_in_id_gt}\n\n")
+            f.write(f"Per-dim Pearson r (GT_age vs all_latents): {np.round(corr_per_dim, 3)}\n\n")
+            f.write(f"Hippocampus SAP (GT_age vs all_latents): {sap_score:.3f}\n\n")
+            f.write(f"GT_age leakage into identity (all) latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n\n")   
+
+
+    ##### T-SNE TESTS #####
     
+    def tsne_visualization(self, train_loader, val_loader, test_loader):
+        """
+        This function performs t-SNE on the latents and visualizes 
+        their clustering based on age and dataset origin.
+
+        Outputs:
+        - Scatter plots for t-SNE results:
+            - One for each latent region wrt gt age and dataset origin.
+            - One for all latents wrt gt age.
+            - One for all latents wrt dataset origin.
+        """
+
+        random_state = 42
+        self.set_seed(random_state)
+        cmap = 'viridis'
+
+        # Read dataset metadata
+        dataset = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'AgeYears', 'Dataset'])
+
+        # Process data
+        train_latents, _, train_gt_age, _, train_dataset = self.process_data(train_loader, dataset=dataset)
+        val_latents, _, val_gt_age, _, val_dataset = self.process_data(val_loader, dataset=dataset)
+        test_latents, _, test_gt_age, _, test_dataset = self.process_data(test_loader, dataset=dataset)
+
+        latents = np.concatenate((train_latents, val_latents, test_latents), axis=0)
+        gt_ages = np.concatenate((train_gt_age, val_gt_age, test_gt_age), axis=0)
+        dataset = np.concatenate((train_dataset, val_dataset, test_dataset), axis=0)
+
+        for i in range(11):
+            if i < 9:  # First 9 latent subgroups (5 latents each) colored by age
+                latents_per_feature = 5
+                subset_latents = latents[:, (i * latents_per_feature):(i * latents_per_feature) + latents_per_feature]
+                name = f"region_{i}"
+                gt_feature = gt_ages
+                plot_cmap = cmap
+
+            elif i == 9:  # All latents colored by age
+                subset_latents = latents
+                name = "all_latents_age"
+                gt_feature = gt_ages
+                plot_cmap = cmap
+
+            else:  # All latents colored by dataset
+                subset_latents = latents
+                name = "all_latents_dataset"
+                gt_feature_str = dataset
+                unique_values = np.unique(gt_feature_str)
+                value_to_number = {value: idx for idx, value in enumerate(unique_values)}
+                gt_feature = np.array([value_to_number[value] for value in gt_feature_str])
+                plot_cmap = ListedColormap(plt.cm.viridis(np.linspace(0, 1, len(unique_values))))
+
+            # Standardize latents
+            sc = StandardScaler()
+            subset_latents_scaled = sc.fit_transform(subset_latents)
+
+            # Perform t-SNE
+            tsne = TSNE(n_components=2, random_state=random_state)
+            tsne_results = tsne.fit_transform(subset_latents_scaled)
+
+            # Plot results
+            plt.figure(figsize=(8, 6))
+            scatter = plt.scatter(tsne_results[:, 0], tsne_results[:, 1], c=gt_feature, cmap=plot_cmap, alpha=0.6)
+
+            if name != "all_latents_dataset":
+                plt.colorbar(scatter, label='Age')
+                plt.title(f't-SNE Visualization of {name.replace("_", " ").title()}')
+            else:
+                cbar = plt.colorbar(scatter, ticks=range(len(unique_values)), label='Datasets')
+                cbar.ax.set_yticklabels(unique_values)
+                plt.title(f't-SNE Visualization of {name.replace("_", " ").title()}')
+
+            plt.xlabel('t-SNE Dimension 1')
+            plt.ylabel('t-SNE Dimension 2')
+
+            # Save plot
+            file_path = os.path.join(self._out_dir, f'tsne_{name}.png')
+            file_path_svg = os.path.join(self._out_dir, f'tsne_{name}.svg')
+            plt.savefig(file_path)
+            plt.savefig(file_path_svg)
+            plt.close()
+
+    def age_prediction_MLP(self, train_loader, eval_loader):
+        """
+        This function trains a MLP model to predict the age of the subjects based on the feature latents. 
+
+        If disentanglement is successful, the model should NOT be able to predict the age of the subjects based on the feature latents.
+
+        Outputs:
+        - Training loss plot
+        - Scatter plot of predicted age vs ground truth age (with training and test data)
+        - Clean scatter plot of test data only with MAE in the title
+        """
+
+        self.set_seed(42)
+
+        dataset = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'AgeYears', 'Dataset'])
+
+        train_latents, _, train_gt_age, _, _ = self.process_data(train_loader, dataset=dataset)
+        eval_latents, _, eval_gt_age, _, _ = self.process_data(eval_loader, dataset=dataset)
+
+        sc = StandardScaler()
+        train_latents_scaled = sc.fit_transform(train_latents)
+        eval_latents_scaled = sc.transform(eval_latents)
+
+        train_latents_tensor = torch.tensor(train_latents_scaled, dtype=torch.float32)
+        eval_latents_tensor = torch.tensor(eval_latents_scaled, dtype=torch.float32)
+
+        train_gt_age_tensor = torch.tensor(train_gt_age, dtype=torch.float32).view(-1, 1)
+        eval_gt_age_tensor = torch.tensor(eval_gt_age, dtype=torch.float32).view(-1, 1)
+
+        train_dataset = TensorDataset(train_latents_tensor, train_gt_age_tensor)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+        input_size = train_latents_tensor.shape[1]
+
+        # Define the MLP model, loss function, and optimizer
+        model = nn.Sequential(
+            nn.Linear(input_size, 150),
+            nn.ReLU(),
+            nn.Linear(150, 100),
+            nn.ReLU(),
+            nn.Linear(100, 50),
+            nn.ReLU(),
+            nn.Linear(50, 1)) 
+        
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+        # Train the model
+        def train_model(model, criterion, optimizer, dataloader, epochs=100):
+            model.train()
+            losses = []
+            for epoch in range(epochs):
+                for inputs, targets in dataloader:
+                    optimizer.zero_grad()
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+                    loss.backward()
+                    optimizer.step()
+                if epoch % 10 == 0:
+                    print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
+                losses.append(loss.item())
+            return losses
+
+        losses = train_model(model, criterion, optimizer, train_loader)
+
+        # Plot the losses
+        plt.figure()
+        plt.clf()
+        plt.plot(losses)
+        plt.title('MLP Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.grid(True)
+
+        file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
+        plt.savefig(file_path)
+
+        # Evaluate the model
+        def evaluate_model(model, X, y):
+            model.eval()
+            with torch.no_grad():
+                predictions = model(X).view(-1)
+                mae = torch.mean(torch.abs(predictions - y.squeeze_(1)))
+            return predictions.numpy(), mae.item()
+
+        train_ages_pred, train_mean_age_diff = evaluate_model(model, train_latents_tensor, train_gt_age_tensor)
+        eval_ages_pred, eval_mean_age_diff = evaluate_model(model, eval_latents_tensor, eval_gt_age_tensor)
+
+        # Plot the results
+        max_age = 17
+
+        # Define base marker size
+        base_marker_size = 50
+
+        plt.figure(figsize=(6, 6))
+        plt.clf()
+
+        # Scatter plot with fixed marker sizes
+        plt.scatter(train_gt_age, train_ages_pred, s=base_marker_size, color='yellow', marker='x', label='Train dataset')
+        plt.scatter(eval_gt_age, eval_ages_pred, s=base_marker_size, color='green', marker='o', label='Eval dataset')
+        plt.plot([0, max_age], [0, max_age], 'r--')
+
+        # Add title, labels, and text
+        plt.title('Age prediction on feature latents')
+        plt.xlabel('Ground truth age (years)')
+        plt.ylabel('Predicted age (years)')
+        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
+        plt.text(0.25, 0.05, f'Mean absolute difference (eval) = {round(eval_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
+
+        # Fixed marker sizes for legend
+        legend_handles = [
+            plt.scatter([], [], color='yellow', marker='x', s=base_marker_size, label='Train dataset'),
+            plt.scatter([], [], color='green', marker='o', s=base_marker_size, label='Eval dataset')
+        ]
+        plt.legend(handles=legend_handles, loc='upper left')
+
+        # Set ticks
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
+
+        file_path = os.path.join(self._out_dir, 'mlp_age_prediction.png')
+        file_path_svg = os.path.join(self._out_dir, 'mlp_age_prediction.svg')
+        plt.savefig(file_path)
+        plt.savefig(file_path_svg)
+
+        # Create a clean plot for the test set
+        plt.figure(figsize=(6, 6))
+        plt.clf()
+
+        # Scatter plot for test set only
+        plt.scatter(eval_gt_age, eval_ages_pred, s=base_marker_size, color='green', marker='o')
+        plt.plot([0, max_age], [0, max_age], 'r--')
+
+        # Add title with MAE
+        plt.title(f'Test Set Age Prediction (MAE = {round(eval_mean_age_diff, 5)} years)')
+
+        # Add axis labels
+        plt.xlabel('Ground truth age (years)')
+        plt.ylabel('Predicted age (years)')
+
+        # Set ticks
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
+
+        file_path_clean = os.path.join(self._out_dir, 'mlp_age_prediction_clean.png')
+        file_path_clean_svg = os.path.join(self._out_dir, 'mlp_age_prediction_clean.svg')
+        plt.savefig(file_path_clean)
+        plt.savefig(file_path_clean_svg)
 
 
 if __name__ == '__main__':

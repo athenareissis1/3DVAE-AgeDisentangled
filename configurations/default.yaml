@@ -4,6 +4,7 @@ data:
   dataset_type: faces
   # pca_path: UHM_models/head_model_global_align_no_mouth_and_eyes.pkl            # to be used if data are generated with UHM
   dataset_path: /raid/compass/athena/data/friday/PLY_smooth_tri_friday_unified_meshes
+  dataset_metadata_path: preprocessing_data/friday_all_datasets.csv 
   normalize_data: True
   to_mm_constant: 156.28255886643                                               # if already in mm set to 1, otherwise set proper multiplicative constant
   std_pca_latent: 1                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
@@ -12,7 +13,7 @@ data:
   swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
 
 optimization:
-  epochs: 40
+  epochs: 600 #40
   batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
   lr: 1e-4
   weight_decay: 0
@@ -43,5 +44,5 @@ model:
   latent_size: 45                                                               # size of the latent vector
 
 logging_frequency:
-  tb_renderings: 10 #5
-  save_weights: 20
+  tb_renderings: 100 #10 #5
+  save_weights: 200 #20

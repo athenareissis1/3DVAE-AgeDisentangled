@@ -379,7 +379,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename, show=False):
-        mesh_path = os.path.join(self._root, filename) # + '.ply')
+        mesh_path = os.path.join(self._root, filename + '.ply')
         mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
