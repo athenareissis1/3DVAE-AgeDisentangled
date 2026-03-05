@@ -96,9 +96,9 @@ class Tester:
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
         self.per_variable_range_experiments(use_z_stats=False)
-        # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-        # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
-        # self.age_prediction_MLP(self._train_loader, self._test_loader) 
+        self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+        self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+        self.age_prediction_MLP(self._train_loader, self._test_loader) 
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev

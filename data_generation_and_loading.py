@@ -293,6 +293,8 @@ class MeshInMemoryDataset(InMemoryDataset):
         self._normalize = normalize
         self._template = template
 
+        # data_split_path = os.path.join(precomputed_storage_path, 'data_split.json')
+
         self._train_names, self._test_names, self._val_names = self.split_data(
             os.path.join(precomputed_storage_path, 'data_split.json'))
 

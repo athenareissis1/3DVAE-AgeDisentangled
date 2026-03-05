@@ -1,6 +1,6 @@
 data:
   template_path: configurations/colour_template_9.ply                           # vertices should be coloured (vertex semantic segmentation)
-  precomputed_path: precomputed
+  precomputed_path: precomputed_baseline
   dataset_type: faces
   # pca_path: UHM_models/head_model_global_align_no_mouth_and_eyes.pkl            # to be used if data are generated with UHM
   dataset_path: /raid/compass/athena/data/friday/PLY_smooth_tri_friday_unified_meshes
