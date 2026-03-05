@@ -40,7 +40,7 @@ data:
   
 optimization:
   epochs: 600
-  batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
+  batch_size: 16 #4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
   lr: 1e-4
   weight_decay: 0
 
@@ -112,7 +112,7 @@ model:
   pre_z_sigmoid: False
 
   age_disentanglement: True   
-  age_seperation: False #rue                                                  # if True, an extra feature is added to the latent vector that represents age & age related losses are added
+  age_seperation: False #True                                                  # if True, an extra feature is added to the latent vector that represents age & age related losses are added
   age_remove_loss_mlp: True
   age_reconstruction_mlp: False #True
   contrastive_loss: False #True                                                        # if True, contrastive loss is used

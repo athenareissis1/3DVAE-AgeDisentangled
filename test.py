@@ -118,11 +118,11 @@ class Tester:
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
             eval_loader = self._test_loader # self._val_loader,
             # self.dataset_split()
-            self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
-            self.age_prediction_MLP(self._train_loader, eval_loader)
+            # self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
+            # self.age_prediction_MLP(self._train_loader, eval_loader)
             self.age_latent_changing(eval_loader)
-            self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
-            self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+            # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+            # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
             # self.proportions(dataset)
             # self.plot_proportions()
 
@@ -1349,7 +1349,9 @@ class Tester:
                 # else:
                 #     test_name = 'test_' + test_name
                 file_path = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.png')
-                plt.savefig(file_path, bbox_inches='tight')  # Save with tight layout to include the legend
+                file_path_svg = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.svg')
+                plt.savefig(file_path, bbox_inches='tight')  
+                plt.savefig(file_path_svg, bbox_inches='tight')  
                 self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
 
 
@@ -1794,8 +1796,34 @@ class Tester:
         plt.yticks(range(0, 18))
 
         file_path = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.png')
+        file_path_svg = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.svg')
         plt.savefig(file_path)
+        plt.savefig(file_path_svg)
         self.log['test/mlp_age_prediction'].upload(file_path)
+
+        # Create a clean plot for the test set
+        plt.figure(figsize=(6, 6))
+        plt.clf()
+
+        # Scatter plot for test set only
+        plt.scatter(eval_gt_age, eval_ages_pred, s=base_marker_size, color='green', marker='o')
+        plt.plot([0, max_age], [0, max_age], 'r--')
+
+        # Add title with MAE
+        plt.title(f'Test Set Age Prediction (MAE = {round(eval_mean_age_diff, 5)} years)')
+
+        # Add axis labels
+        plt.xlabel('Ground truth age (years)')
+        plt.ylabel('Predicted age (years)')
+
+        # Set ticks
+        plt.xticks(range(0, 18))
+        plt.yticks(range(0, 18))
+
+        file_path_clean = os.path.join(self._out_dir, 'mlp_age_prediction_clean.png')
+        file_path_clean_svg = os.path.join(self._out_dir, 'mlp_age_prediction_clean.svg')
+        plt.savefig(file_path_clean)
+        plt.savefig(file_path_clean_svg)
 
 
 
@@ -1959,12 +1987,12 @@ class Tester:
         # read csv file
         datasets = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'Dataset'])
 
-        _, train_feature_latents, train_age_latents, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, only_diagonal=diagonal)
-        _, val_feature_latents, val_age_latents, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,only_diagonal=diagonal)
-        _, test_feature_latents, test_age_latents, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,only_diagonal=diagonal)
+        _, train_feature_latents, _, train_gt_ages, _, train_dataset = self.process_data(train_loader, datasets=datasets, only_diagonal=diagonal)
+        _, val_feature_latents, _, val_gt_ages, _, val_dataset = self.process_data(val_loader, datasets=datasets,only_diagonal=diagonal)
+        _, test_feature_latents, _, test_gt_ages, _, test_dataset = self.process_data(test_loader, datasets=datasets,only_diagonal=diagonal)
 
         feature_latents = np.concatenate((train_feature_latents, val_feature_latents, test_feature_latents), axis=0)
-        age_latents = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
+        # age_latents = np.concatenate((train_age_latents, val_age_latents, test_age_latents), axis=0)
         gt_ages = np.concatenate((train_gt_ages, val_gt_ages, test_gt_ages), axis=0)
         datasets = [train_dataset, val_dataset, test_dataset]
         datasets = np.concatenate(datasets, axis=0)
@@ -2023,9 +2051,9 @@ class Tester:
             plt.savefig(file_path)
             self.log[f'test/tsne_feature_latents_subset_{name}'].upload(file_path)
 
-            # if name == "all_dataset":
-            #     file_path_svg = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
-            #     plt.savefig(file_path_svg)
+            if name == "all_dataset" or name == "all":
+                file_path_svg = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
+                plt.savefig(file_path_svg)
 
             plt.close()
 
@@ -2163,7 +2191,7 @@ class Tester:
         # pcc_age = corr_per_dim[age_dim]
 
         # SAP score for age (continuous factor)
-        sap_score = utils.sap(factors=ages_np[:, None], codes=lat_np, continuous_factors=True, regression=True)
+        sap_score_hipp = utils.sap(factors=ages_np[:, None], codes=lat_np, continuous_factors=True, regression=True)
 
         # How much age leaks into the other latent dims (max |corr| excluding age_dim)
         leakage_age_into_others = 0.0
@@ -2171,84 +2199,71 @@ class Tester:
         if lat_np.shape[1] > 1:
             leakage_age_into_others = max(abs(c) for i, c in enumerate(corr_per_dim) if i in range(age_dim))
 
-        print("Per-dim Pearson r (GT_age vs all_latents):", np.round(corr_per_dim, 3))
+        print("Per-dim Pearson r (GT_age in all_latents):", np.round(corr_per_dim, 3))
         # print(f"GT_age: most age-related latent index: {age_dim} (corr={pcc_age:.3f})")
-        print(f"Hippocampus SAP (GT_age vs all_latents): {sap_score:.3f}")
+        print(f"Hippocampus SAP (GT_age in all_latents): {sap_score_hipp:.3f}")
         print(f"GT_age leakage into identity latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n")
-
-        # # Log a concise line per model
-        # message = (
-        #     # "Model={:s} | "
-        #     # "Corr_age(dim1)={:.3f} | "
-        #     # "SAP_age={:.3f}"
-        #     "AgeDim={} | "
-        #     "Corr_age={:.3f} | "
-        #     "SAP_age={:.3f} | "
-        #     "Leakage_age_max_other={:.3f}"
-        # ).format(
-        #     # folder_name,
-        #     # pcc,         # correlation between age and latent dim 0
-        #     # sap_score,   # SAP for age (continuous, regression)
-        #     age_dim,
-        #     pcc_age,
-        #     sap_score,
-        #     leakage_age_into_others,
-        # )
-
-        # out_error_fp = base_path / "test_age_scan.txt"
-        # out_error_fp.parent.mkdir(parents=True, exist_ok=True)
-        # print("writing test log to:", out_error_fp)
-        # with open(out_error_fp, 'a') as log_file:
-        #     log_file.write(f"{message}\n")
-                
 
         # === FEATURE-LEVEL R_2 TESTS ===
         # ------------------------------------------------------------------
         # 4) Feature-level R² (age in id / id in age) - train linear regression models for each feature block and compute R² on test set
         # ------------------------------------------------------------------
 
-        feature_r2_results_id_in_age = {}
-        feature_r2_results_age_in_id = {}
-        features = ["Temporal", "Eyes", "Cheekbones", "Cheeks", "Jaw", "Forehead", "Chin", "Lips", "Nose"]
+        if self._config['model']['age_per_feature']:
+            feature_r2_results_id_in_age = {}
+            feature_r2_results_age_in_id = {}
+            features = ["Temporal", "Eyes", "Cheekbones", "Cheeks", "Jaw", "Forehead", "Chin", "Lips", "Nose"]
 
-        # Assuming 45 id latents (5 per feature) and 9 age latents
-        num_features = age_latents_train_val.shape[1]
-        id_latent_size = identity_latents_train_val.shape[1]
-        id_per_feature = id_latent_size // num_features
+            # Assuming 45 id latents (5 per feature) and 9 age latents
+            num_features = age_latents_train_val.shape[1]
+            id_latent_size = identity_latents_train_val.shape[1]
+            id_per_feature = id_latent_size // num_features
 
-        model_age_in_id = LinearRegression()
-        model_id_in_age = LinearRegression()
+            model_age_in_id = LinearRegression()
+            model_id_in_age = LinearRegression()
 
-        for i in range(num_features):
-            id_inds = list(range(i * id_per_feature, (i + 1) * id_per_feature))
-            age_ind = i
+            for i in range(num_features):
+                id_inds = list(range(i * id_per_feature, (i + 1) * id_per_feature))
+                age_ind = i
 
-            feature_name = features[i]
-            id_train_sub = identity_latents_train_val[:, id_inds]
-            id_test_sub = identity_latents_test[:, id_inds]
-            age_train_sub = age_latents_train_val[:, age_ind]
-            age_test_sub = age_latents_test[:, age_ind]
+                feature_name = features[i]
+                id_train_sub = identity_latents_train_val[:, id_inds]
+                id_test_sub = identity_latents_test[:, id_inds]
+                age_train_sub = age_latents_train_val[:, age_ind]
+                age_test_sub = age_latents_test[:, age_ind]
 
-            age_train_sub = age_train_sub.reshape(-1, 1)
-            age_test_sub = age_test_sub.reshape(-1, 1)
+                age_train_sub = age_train_sub.reshape(-1, 1)
+                age_test_sub = age_test_sub.reshape(-1, 1)
 
-            # Fit the model for "age in identity"
-            model_age_in_id.fit(id_train_sub, age_train_sub)
-            r2 = r2_score(age_test_sub, model_age_in_id.predict(id_test_sub), multioutput='variance_weighted')
-            feature_r2_results_age_in_id[feature_name] = r2
+                # Fit the model for "age in identity"
+                model_age_in_id.fit(id_train_sub, age_train_sub)
+                r2 = r2_score(age_test_sub, model_age_in_id.predict(id_test_sub), multioutput='variance_weighted')
+                feature_r2_results_age_in_id[feature_name] = r2
 
-            # Fit the model for "identity in age"
-            model_id_in_age.fit(age_train_sub, id_train_sub)
-            r2 = r2_score(id_test_sub, model_id_in_age.predict(age_test_sub), multioutput='variance_weighted')
-            feature_r2_results_id_in_age[feature_name] = r2
+                # Fit the model for "identity in age"
+                model_id_in_age.fit(age_train_sub, id_train_sub)
+                r2 = r2_score(id_test_sub, model_id_in_age.predict(age_test_sub), multioutput='variance_weighted')
+                feature_r2_results_id_in_age[feature_name] = r2
 
-        # print("Feature-level SAP results (age in id):", feature_sap_results_age_in_id)
-        # print("Feature-level DCI results (id in age):", feature_dci_results_id_in_age)
-        print("Feature-level R² results (age in id):", feature_r2_results_age_in_id)
-        print("Feature-level R² results (id in age):", feature_r2_results_id_in_age)
-        self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
-        self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age
+            # print("Feature-level SAP results (age in id):", feature_sap_results_age_in_id)
+            # print("Feature-level DCI results (id in age):", feature_dci_results_id_in_age)
+            print("Feature-level R² results (age in id):", feature_r2_results_age_in_id)
+            print("Feature-level R² results (id in age):", feature_r2_results_id_in_age)
+            self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
+            self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age                
     
+        output_file = os.path.join(self._out_dir, 'dis_stats.txt')
+        with open(output_file, 'w') as f:
+            f.write(f"SAP (age latents info in identity latents): {sap_score}\n\n")
+            f.write(f"R² (identity latents info in age latent): {r2_id_given_age:.3f} \n\n")
+            f.write(f"SAP (GT age in identity latents): {sap_age_in_id_gt}\n\n")
+            f.write(f"R² (GT age in age latent): {r2_age_vs_latent:.3f} \n\n")
+            f.write(f"Per-dim Pearson r (GT_age in all_latents): {np.round(corr_per_dim, 3)}\n\n")
+            f.write(f"Hippocampus SAP (GT_age in all_latents): {sap_score_hipp:.3f} \n\n")
+            f.write(f"GT_age leakage into identity latents (max |corr| excluding best): {leakage_age_into_others:.3f}\n\n")
+            if self._config['model']['age_per_feature']:
+                f.write(f"Feature-level R² results (age in id): {feature_r2_results_age_in_id}\n\n")
+                f.write(f"Feature-level R² results (id in age): {feature_r2_results_id_in_age}\n\n")
 
     def proportions(self, data_loader):
         """
