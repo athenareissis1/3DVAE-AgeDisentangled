@@ -36,3 +36,7 @@ logging.yaml
 measurements/
 
 precomputed_baseline/
+
+smooth_test/
+
+remove_triangle_tests/

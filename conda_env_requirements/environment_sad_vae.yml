@@ -1,0 +1,16 @@
+name: sad-vae
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - pytorch-cuda=12.1
+  - gcc_linux-64=11
+  - gxx_linux-64=11
+  - pip
+  - pip:
+      - -r requirements_sad_vae.txt

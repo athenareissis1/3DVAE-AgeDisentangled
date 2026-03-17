@@ -15,9 +15,52 @@ import csv
 import pandas as pd
 import torch
 import pymeshlab as ml
+import json
 
 
-def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, test=True):
+def change_file_names(dataset_folder_path):
+    # for each file in dataset folder, the file name is sf_xxx.obj where xxx is a number. We want to change it to f_xxx.obj
+    count = 1
+    for file_name in os.listdir(dataset_folder_path):
+        print(f"Count: ({count})")
+        count += 1
+        old_file_path = os.path.join(dataset_folder_path, file_name)
+        new_file_name = 'f_' + file_name.split('_')[1]
+        new_file_path = os.path.join(dataset_folder_path, new_file_name)
+        os.rename(old_file_path, new_file_path)
+
+
+def create_subset_dataset(dataset_folder_path, dataset_metadata_path):
+    """
+    Creates a subset of the dataset by copying files corresponding to ages 0-17 years to a new folder.
+
+    Parameters:
+        dataset_folder_path (str): Path to the original dataset folder containing mesh files.
+        dataset_metadata_path (str): Path to the CSV file containing metadata with 'id' and 'AgeYears'
+    """
+
+    metadata = pd.read_csv(dataset_metadata_path)
+    valid_ids = metadata[(metadata['AgeYears'] >= 0) & (metadata['AgeYears'] <= 17)]['id'].astype(str).tolist()
+    subset_folder_path = dataset_folder_path + "_subset_0_17"
+
+    if not os.path.exists(subset_folder_path):
+        os.makedirs(subset_folder_path) 
+
+    for file_name in os.listdir(dataset_folder_path):
+        if file_name.endswith(('.ply', '.obj', '.stl')) and not file_name.startswith('._'):
+            file_id = file_name.split('.')[0]
+            if file_id in valid_ids:
+                original_file_path = os.path.join(dataset_folder_path, file_name)
+                subset_file_path = os.path.join(subset_folder_path, file_name)
+                try:
+                    with open(original_file_path, 'rb') as src_file:
+                        with open(subset_file_path, 'wb') as dst_file:
+                            dst_file.write(src_file.read())
+                except Exception as e:
+                    print(f"Failed to copy {file_name}: {e}")
+
+
+def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, count, test=True):
     """
     Opens a mesh file, deletes vertices based on the given indices, and saves the modified mesh.
 
@@ -28,6 +71,8 @@ def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset
     Returns:
         None
     """
+
+    print(f"Count: ({count})")
     # Load the mesh
     mesh = trimesh.load(mesh_file)
     # take the last part of the path after the last '/' and save it as mesh_file_name
@@ -62,23 +107,16 @@ def delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset
     # Create the new mesh
     modified_mesh = trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
 
-    # Save the modified mesh
-    # modified_mesh_path = os.path.join(f"/raid/compass/athena/data/{dataset}/" + os.path.basename(mesh_file))
-    # modified_mesh.export(modified_mesh_path)
-
-    # if folder 'remove_triangle_tests' does not exist, create it
-    if test and not os.path.exists("remove_triangle_tests"):
-        os.makedirs("remove_triangle_tests")
-
     if test:
+        if not os.path.exists("remove_triangle_tests"):
+            os.makedirs("remove_triangle_tests")
         modified_mesh.export(f"remove_triangle_tests/{mesh_file_name}")
     else:
-        modified_mesh_path = os.path.join(f"/raid/compass/athena/data/smooth_{dataset}/{mesh_file_name}")
-        # if not os.path.exists(modified_mesh_path):
-        #     os.makedirs(modified_mesh_path)
-        modified_mesh.export(modified_mesh_path)
+        # modified_mesh_path = os.path.join(f"/raid/compass/athena/data/smooth_{dataset}/{mesh_file_name}")
+        # modified_mesh.export(modified_mesh_path)
+        modified_mesh.export(mesh_file)
+        print(f"Modified mesh saved to: {mesh_file}")
 
-    # print(f"Modified mesh saved to: {modified_mesh_path}")
 
 # Process the first 40 meshes in the specified folder
 def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove, dataset):
@@ -98,16 +136,16 @@ def delete_vertices_for_all_to_new_folder(folder_path, vertex_indices_to_remove,
         if f.endswith(('.ply', '.obj', '.stl'))
     ]
 
-    # Process the first `max_files` meshes
+    count = 1
+
     for i, mesh_file in enumerate(mesh_files):
         base = os.path.basename(mesh_file)
 
-        if base == "f__1.obj":
-            continue
-        if base.startswith("._"):
+        if base == "f_1.obj":
             continue
         else:
-            delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, test=False)
+            delete_vertices_for_single_mesh(mesh_file, vertex_indices_to_remove, dataset, count, test=False)
+            count += 1
 
     
 def verticies_difference(template_file, mesh_file):
@@ -152,16 +190,23 @@ def remove_files_with_keyword(directory):
         keyword (str): Keyword to search for in file names.
     """
 
-    keyword = "test_data_modified"
+    # keyword = "test_data_modified"
+    keyword = 'sf'
+
+    count = 1
 
     for filename in os.listdir(directory):
-        if keyword in filename:
+        print(f"Count: ({count})")
+        count += 1
+        if keyword not in filename:
             file_path = os.path.join(directory, filename)
             try:
                 os.remove(file_path)
-                # print(f"Removed file: {file_path}")
+                print(f"Removed file: {file_path}")
             except Exception as e:
                 print(f"Error removing file {file_path}: {e}")
+        else:
+            print(f"Keeping file: {filename}")
 
 
 def get_xyz_coordinates(mesh, template_faces, triangle_index, u, v):
@@ -395,18 +440,13 @@ def distance_proportion_averages(dataset_type, output_directory):
 
     print(f"Average proportions per age saved to: {output_csv_path}")
 
-def smooth_mesh(folder_path, dataset, file_name='1216.obj', smooth=1, test=True):
+def smooth_mesh(mesh_file, file_name='1216.obj', smooth=1, test=True):
 
     # file_name = 'f_1520.obj'
     # smooth = 1
 
-    # combine folder_path with file_name
-    mesh = folder_path + f'/{file_name}'
-    # make dataset_path by splitting by / and removing the last one
-    dataset_path = os.path.dirname(folder_path)
-
     ms = ml.MeshSet()
-    ms.load_new_mesh(mesh)
+    ms.load_new_mesh(mesh_file)
 
     ms.apply_coord_laplacian_smoothing(
         stepsmoothnum=smooth,   # Smoothing steps
@@ -415,13 +455,21 @@ def smooth_mesh(folder_path, dataset, file_name='1216.obj', smooth=1, test=True)
         selected=False          # Affects entire mesh
     )
 
+    folder = os.path.dirname(mesh_file)
+    new_file_name = 's' + file_name
+    new_file_path = os.path.join(folder, new_file_name)
+
+
     if test:
         ms.save_current_mesh(f"smooth_tests/{file_name}")
     else:
         # check if the folder exists, if not create it
-        if not os.path.exists(os.path.join(dataset_path, f'smooth_{dataset}')):
-            os.makedirs(os.path.join(dataset_path, f'smooth_{dataset}'))
-        ms.save_current_mesh(os.path.join(dataset_path, f'smooth_{dataset}', f"{file_name}"))
+        # if not os.path.exists(os.path.join(dataset_path, f'smooth_{dataset}')):
+        #     os.makedirs(os.path.join(dataset_path, f'smooth_{dataset}'))
+        # ms.save_current_mesh(os.path.join(dataset_path, f'smooth_{dataset}', f"{file_name}"))
+        # ms.save_current_mesh(os.path.join(folder_path, file_name))
+        ms.save_current_mesh(new_file_path)
+        print(f"Smoothed mesh saved to: {new_file_path}")
 
 def smooth_dataset(folder_path, dataset_metadata_path, dataset):
 
@@ -434,9 +482,20 @@ def smooth_dataset(folder_path, dataset_metadata_path, dataset):
 
     metadata = pd.read_csv(dataset_metadata_path)[['id', 'Dataset']]
 
+    count = 1
+
     for i, mesh_file in enumerate(mesh_files):
 
+        print(f"Count: ({count})")
+        count += 1
+
         file_name = os.path.basename(mesh_file)
+
+        # if file_name contqains 'sf' then skip
+        if 'sf' in file_name:
+            print(f"Skipping {file_name} because it contains 'sf'.")
+            continue
+
         # origin = metadata.loc[metadata['id'] == int(file_name.split('.')[0]), 'Dataset'].values[0]
         origin = metadata.loc[metadata['id'] == file_name.split('.')[0], 'Dataset'].values[0]
 
@@ -451,7 +510,7 @@ def smooth_dataset(folder_path, dataset_metadata_path, dataset):
         elif origin == 'Paeds':
             smooth_factor = 0
 
-        smooth_mesh(folder_path, dataset, file_name=file_name, smooth=smooth_factor, test=False)
+        smooth_mesh(mesh_file, file_name=file_name, smooth=smooth_factor, test=False)
 
 def obj_to_ply(obj_folder_path, ply_folder_path, metadata_path):
     """
@@ -497,6 +556,19 @@ def obj_to_ply(obj_folder_path, ply_folder_path, metadata_path):
 
     print(f"Total files converted: {converted_count}")
 
+def dataset_split_obj_to_ply(dataset_split_path):
+    # read dataseet split json file and recreate it replacing all .obj with .ply and save it as dataset_split_ply.json
+    with open(dataset_split_path) as f:
+        dataset_split = json.load(f)
+    dataset_split_ply = {}
+    for split, files in dataset_split.items():
+        dataset_split_ply[split] = [file.replace('.obj', '.ply') for file in files]
+    new_split_path = dataset_split_path.replace('.json', '_ply.json')
+    # open for writing (create or truncate)
+    with open(new_split_path, 'w') as f:
+        json.dump(dataset_split_ply, f, indent=4)
+
+        
 # Example usage
 if __name__ == "__main__":
 
@@ -504,8 +576,8 @@ if __name__ == "__main__":
 
     # dataset = "unified_normals_dataset"
     # dataset_type = "combined"
-    dataset = "friday/smooth_tri_friday_unified_meshes"
-    dataset_type = "frday_combined"
+    dataset = "friday_unified_meshes_subset_0_17"
+    dataset_type = "friday_unified"
     metadata_filename = "friday_all_datasets.csv"
     reconstructions = None
     mesh_names = None
@@ -521,6 +593,9 @@ if __name__ == "__main__":
 
     dataset_folder_path = f"/raid/compass/athena/data/{dataset}"  # Replace with your folder path
     dataset_metadata_path = f"preprocessing_data/{metadata_filename}"
+    dataset_split_path = f"precomputed/data_split_{dataset_type}.json"  # Replace with your desired output folder path for split dataset
+
+    # create_subset_dataset(dataset_folder_path, dataset_metadata_path)
         
     # vertices_to_remove = [6945, 6946, 16087]   # Replace with the indices of vertices to remove # was [6945, 6946, 16087] 
 
@@ -531,13 +606,16 @@ if __name__ == "__main__":
 
     # remove_files_with_keyword(dataset_folder_path)
 
-    #### RUN
-    calculate_distances_in_folder(dataset_folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
-    add_proportions_age_gender_to_csv(dataset_folder_path, dataset_type, output_directory, dataset_metadata_path)
-    distance_proportion_averages(dataset_type, output_directory)
-
     # smooth_mesh(dataset_folder_path)
     # smooth_dataset(dataset_folder_path, dataset_metadata_path, dataset)
 
-    # ply_folder_path = "/raid/compass/athena/data/friday/PLY_smooth_tri_friday_unified_meshes"
+    # change_file_names(dataset_folder_path)
+
+    # ply_folder_path = "/raid/compass/athena/data/PLY_friday_unified_meshes_subset_0_17"
     # obj_to_ply(dataset_folder_path, ply_folder_path, dataset_metadata_path)
+    dataset_split_obj_to_ply(dataset_split_path)
+
+    # calculate_distances_in_folder(dataset_folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
+    # add_proportions_age_gender_to_csv(dataset_folder_path, dataset_type, output_directory, dataset_metadata_path)
+    # distance_proportion_averages(dataset_type, output_directory)
+

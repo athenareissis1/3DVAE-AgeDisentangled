@@ -3,8 +3,6 @@ import argparse
 import shutil
 import tqdm
 import torch.nn
-import neptune
-from torch.utils.tensorboard import SummaryWriter
 
 import utils
 from data_generation_and_loading import FaceGenerator, BodyGenerator
@@ -21,7 +19,8 @@ parser.add_argument('--generate_data', action='store_true')
 parser.add_argument('--resume', action='store_true')
 opts = parser.parse_args()
 config = utils.get_config(opts.config)
-logging = utils.get_config("logging.yaml")
+# logging = utils.get_config("logging.yaml")
+logging = None
 
 if opts.id != 'none':
     model_name = opts.id
@@ -30,14 +29,11 @@ else:
 output_directory = os.path.join(opts.output_path + "/outputs", model_name)
 checkpoint_dir = utils.prepare_sub_folder(output_directory)
 
-writer = SummaryWriter(output_directory + '/logs')
+# writer = SummaryWriter(output_directory + '/logs')
+writer = None
 shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml'))
 
-log = neptune.init_run(
-            project=logging['logging']['neptune_project'], 
-            api_token=logging['logging']['neptune_api'],
-            custom_run_id=os.path.basename(output_directory)
-            )
+log = None
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
@@ -83,13 +79,11 @@ validation_visualization_batch = next(iter(validation_loader))
 # manager.render_and_show_batch(train_visualization_batch, normalization_dict)
 
 if opts.resume:
-    # for step in range(41, 600):  # use a big upper bound if unsure
-    #     del log["train/age"][step]
     start_epoch = manager.resume(checkpoint_dir)
 else:
     start_epoch = 0
 
-manager.log_hyperparameters(log, config, logging)
+# manager.log_hyperparameters(log, config, logging)
 
 for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     manager.run_epoch(train_loader, device, train=True)
@@ -106,7 +100,7 @@ for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)
 
-log.stop()
+# log.stop()
 
 Tester(manager, normalization_dict, train_loader, validation_loader, test_loader,
        output_directory, config, logging)()

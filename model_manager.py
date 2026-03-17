@@ -2,9 +2,9 @@ import os
 import pickle
 import torch.nn
 import trimesh
-import neptune
+# import neptune
 import numpy as np
-import random
+# import random
 
 from torch.nn.functional import cross_entropy
 from torchvision.transforms import ToPILImage
@@ -93,7 +93,7 @@ class ModelManager(torch.nn.Module):
         bs = self._optimization_params['batch_size']
         self._batch_diagonal_idx = [(bs + 1) * i for i in range(bs)]
 
-        if self._swap_feature:
+        if self._swap_feature or self._age_per_feature:
             self._latent_regions = self._compute_latent_regions()
         else:
             self._latent_regions = None
@@ -574,9 +574,6 @@ class ModelManager(torch.nn.Module):
             else:
                 loss_age = torch.tensor(0, device=device)
 
-            # if self._age_seperation:
-
-
             if self._age_remove_loss_mlp and train:
                 loss_age_remove_mlp = self._compute_age_remove_loss_mlp(mu, data.norm_age)
             else:
@@ -845,10 +842,9 @@ class ModelManager(torch.nn.Module):
             if self._swap_feature:
                 age_latents = age_latents[self.batch_diagonal_idx]
 
-            # add if age seperartion
-
-            gt_age_norm = gt_age_norm.to(dtype=torch.float32).squeeze()
+            gt_age_norm = gt_age_norm.to(dtype=torch.float32).view(-1, 1)
             age_loss = self.compute_mse_loss(age_latents, gt_age_norm)
+
 
         return age_loss
     
@@ -1131,6 +1127,9 @@ class ModelManager(torch.nn.Module):
             fake data = identity latnets output of the encoder
             """
 
+            # pull error warning here
+            raise KeyError("ADV for latent if option 1 loss needs fixing.")
+
             ## NEEDS FIXING ##
 
             if grl:
@@ -1255,6 +1254,9 @@ class ModelManager(torch.nn.Module):
             real = z
             fake = z with identity latents being permuted together withing mini-batch 
             """
+
+            # pull error warning here
+            raise KeyError("ADV for latent if option 2.1 loss needs fixing.")
                     
             if grl:
                 lambda_grl = 1.0 #scale factor for gradient reversal layer
@@ -1312,6 +1314,9 @@ class ModelManager(torch.nn.Module):
             fake = z with age latents being permuted together and identity latents being permuted together within mini-batch 
             """
 
+            # pull error warning here
+            raise KeyError("ADV for latent if option 2.2 loss needs fixing.")
+
             if grl:
                 lambda_grl = 1.0 #scale factor for gradient reversal layer
                 z_reversed = GradientReversalLayer.apply(z, lambda_grl)
@@ -1351,6 +1356,9 @@ class ModelManager(torch.nn.Module):
             real data = latent output of the encoder
             fake data = ideneity latnets output of the encoder but with the age latents changed to one of its respective identity latents values, randomly chosen
             """
+
+            # pull error warning here
+            raise KeyError("ADV for latent if option 3 loss needs fixing.")
 
             if grl:
                 lambda_grl = 1.0 #scale factor for gradient reversal layer
@@ -1442,9 +1450,9 @@ class ModelManager(torch.nn.Module):
         for k in self.loss_keys:
             loss = self._losses[k]
             loss = loss.item() if torch.is_tensor(loss) else loss
-            writer.add_scalar(
-                phase + '/' + str(k), loss, epoch + 1)
-            nept_log[phase + '/' + str(k)].log(loss)
+            # writer.add_scalar(
+            #     phase + '/' + str(k), loss, epoch + 1)
+            # nept_log[phase + '/' + str(k)].log(loss)
 
     def log_images(self, in_data, writer, nept_log, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
@@ -1470,28 +1478,14 @@ class ModelManager(torch.nn.Module):
                                      error_max_scale)
         log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
-        #################
-        writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
-
-        img = ToPILImage()(log.cpu())
-        img_np = np.array(img)
-
-        nept_log[phase + '/images'].log(neptune.types.File.as_image(img_np))
-        #################
         
-        # # Convert tensor to NumPy array directly
-        # log_np = log.permute(1, 2, 0).cpu().numpy()  # Convert to HWC format
+        #################
+        # writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
 
-        # # Use PIL with the updated API for resizing
-        # from PIL import Image
-        # img = Image.fromarray((log_np * 255).astype(np.uint8))  # Scale to 0-255
-        # img = img.resize((img.width, img.height), Image.Resampling.LANCZOS)  # Updated API
+        # img = ToPILImage()(log.cpu())
+        # img_np = np.array(img)
 
-        # # Log the image to TensorBoard
-        # writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=torch.tensor(np.array(img)).permute(2, 0, 1))
-
-        # # Log the image to Neptune
-        # nept_log[phase + '/images'].log(neptune.types.File.as_image(np.array(img)))
+        # nept_log[phase + '/images'].log(neptune.types.File.as_image(img_np))
         #################
 
     def _create_renderer(self, img_size=256):
@@ -1573,10 +1567,10 @@ class ModelManager(torch.nn.Module):
 
     def resume(self, checkpoint_dir):
         last_model_name = utils.get_model_list(checkpoint_dir, 'model')
-        state_dict = torch.load(last_model_name)
+        state_dict = torch.load(last_model_name, weights_only=False)
         self._net.load_state_dict(state_dict['model'])
         epochs = int(last_model_name[-11:-3])
-        state_dict = torch.load(os.path.join(checkpoint_dir, 'optimizer.pt'))
+        state_dict = torch.load(os.path.join(checkpoint_dir, 'optimizer.pt'), weights_only=False)
         self._optimizer_vae.load_state_dict(state_dict['optimizer'])
         print(f"Resume from epoch {epochs}")
         return epochs

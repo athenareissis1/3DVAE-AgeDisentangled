@@ -1,6 +1,6 @@
 #!/bin/bash
 
-virtualenv -p python3 ./id-generator-env
+virtualenv -p $(which python) ./id-generator-env
 source ./id-generator-env/bin/activate
 
 export CUDA=cu101

@@ -6,7 +6,7 @@ import trimesh
 import torch
 import pytorch3d.loss
 import random
-import neptune
+# import neptune
 
 # import tensorflow as tf
 import numpy as np
@@ -52,11 +52,13 @@ class Tester:
     def __init__(self, model_manager, norm_dict,
                  train_load, val_load, test_load, out_dir, config, logging):
     
-        self.log = neptune.init_run(
-            project=logging['logging']['neptune_project'], 
-            api_token=logging['logging']['neptune_api'],
-            custom_run_id=os.path.basename(out_dir)
-            )
+        # self.log = neptune.init_run(
+        #     project=logging['logging']['neptune_project'], 
+        #     api_token=logging['logging']['neptune_api'],
+        #     custom_run_id=os.path.basename(out_dir)
+        #     )
+
+        self.log = None
  
         self._manager = model_manager
         self._manager.eval()
@@ -111,28 +113,28 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # # TEST TO RUN (run all on val set then once model is finalised move to test set)
-        # self.per_variable_range_experiments(use_z_stats=False)
-        # self.random_generation_and_rendering(n_samples=16)
+        # TEST TO RUN (run all on val set then once model is finalised move to test set)
+        self.per_variable_range_experiments(use_z_stats=False)
+        self.random_generation_and_rendering(n_samples=16)
 
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
             eval_loader = self._test_loader # self._val_loader,
             # self.dataset_split()
-            # self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
-            # self.age_prediction_MLP(self._train_loader, eval_loader)
+            self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
+            self.age_prediction_MLP(self._train_loader, eval_loader)
             self.age_latent_changing(eval_loader)
-            # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
-            # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-            # self.proportions(dataset)
-            # self.plot_proportions()
+            self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+            self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+            self.proportions(eval_loader)
+            self.plot_proportions()
 
             # # relatives tests
             # self.relatives_aging_diff_new()
             # self.relatives_aging()
         
-        self._manager.log_hyperparameters(self.log, self._config, self._logging)
+        # self._manager.log_hyperparameters(self.log, self._config, self._logging)
         
-        self.log.stop()
+        # self.log.stop()
             
 
     def _unnormalize_verts(self, verts, dev=None):
@@ -248,7 +250,7 @@ class Tester:
             
             file_path_age = os.path.join(self._out_dir, 'latent_exploration_all_age_latents_[min-max].mp4')
             write_video(file_path_age, all_frames_age.permute(0, 2, 3, 1) * 255, fps=4)
-            self.log['test/latent_exploration_all_age_latents_[min-max].mp4'].upload(file_path_age)
+            # self.log['test/latent_exploration_all_age_latents_[min-max].mp4'].upload(file_path_age)
 
             # changing all age latent values [0-17]
 
@@ -279,7 +281,7 @@ class Tester:
 
             file_path = os.path.join(self._out_dir, 'latent_exploration_all_age_latents_[0-17].mp4')
             write_video(file_path, frames.permute(0, 2, 3, 1) * 255, fps=4)
-            self.log['test/latent_exploration_all_age_latents_[0-17].mp4'].upload(file_path)
+            # self.log['test/latent_exploration_all_age_latents_[0-17].mp4'].upload(file_path)
 
 
         #### NOT AGE TESTS ####
@@ -312,7 +314,7 @@ class Tester:
 
         file_path = os.path.join(self._out_dir, 'latent_exploration.mp4')
         write_video(file_path, torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        self.log['test/latent_exploration.mp4'].upload(file_path)
+        # self.log['test/latent_exploration.mp4'].upload(file_path)
 
 
         # Same video as before, but effects of perturbing each latent variables
@@ -344,10 +346,10 @@ class Tester:
                           pad_value=1, nrow=grid_nrows))
         save_image(grid_frames[-1],
                    os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
-        self.log['test/latent_exploration_tiled.png'].upload(os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
+        # self.log['test/latent_exploration_tiled.png'].upload(os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
         file_path = os.path.join(self._out_dir, 'latent_exploration_tiled.mp4')
         write_video(file_path, torch.stack(grid_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=1)
-        self.log['test/latent_exploration_tiled.mp4'].upload(file_path)
+        # self.log['test/latent_exploration_tiled.mp4'].upload(file_path)
 
         # Same as before, but only output meshes are used
         stacked_frames_meshes = torch.stack(all_renderings)
@@ -358,7 +360,7 @@ class Tester:
                           pad_value=1, nrow=grid_nrows))
         file_path = os.path.join(self._out_dir, 'latent_exploration_outs_tiled.mp4')
         write_video(file_path, torch.stack(grid_frames_m, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        self.log['test/latent_exploration_outs_tiled.mp4'].upload(file_path)
+        # self.log['test/latent_exploration_outs_tiled.mp4'].upload(file_path)
 
         # Create a plot showing the effects of perturbing latent variables in
         # each region of the face
@@ -379,13 +381,13 @@ class Tester:
 
         grid.map(plt.plot, "z_var", "mean_dist", marker="o")
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
-        self.log['test/latent_exploration_split.svg'].upload(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
+        # self.log['test/latent_exploration_split.svg'].upload(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
 
         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
                     hue="region", palette=palette)
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.png'))
-        self.log['test/latent_exploration.png'].upload(os.path.join(self._out_dir, 'latent_exploration.png'))
+        # self.log['test/latent_exploration.png'].upload(os.path.join(self._out_dir, 'latent_exploration.png'))
 
     def random_latent(self, n_samples, z_range_multiplier=1):
         if self._is_vae:  # sample from normal distribution if vae
@@ -415,7 +417,7 @@ class Tester:
         grid = make_grid(renderings, padding=10, pad_value=1)
         file_path = os.path.join(self._out_dir, 'random_generation.png')
         save_image(grid, file_path)
-        self.log['test/random_generation'].upload(file_path)
+        # self.log['test/random_generation'].upload(file_path)
 
     def random_generation_and_save(self, n_samples=16, z_range_multiplier=1):
         out_mesh_dir = os.path.join(self._out_dir, 'random_meshes')
@@ -1084,12 +1086,12 @@ class Tester:
             file_path = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}.png')
             grid = make_grid(stacked_frames, padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1) 
             save_image(grid, file_path)
-            self.log[f'age_latent_changing_{age_latent_ranges_original}_{name}'].upload(file_path)
+            # self.log[f'age_latent_changing_{age_latent_ranges_original}_{name}'].upload(file_path)
 
 
         line_to_add = 'age_latent_changing original ages: ' + str(original_ages)
         filename = os.path.join(self._out_dir, 'results.txt')
-        self.log['age_latent_changing_original_ages'].upload(str(original_ages))
+        # self.log['age_latent_changing_original_ages'].upload(str(original_ages))
 
         if not os.path.exists(filename):
             with open(filename, 'w') as file:
@@ -1130,7 +1132,7 @@ class Tester:
         file_path = os.path.join(self._out_dir, 'pre_post_mesh.png')
         grid = make_grid(stacked_frames, padding=padding_value, pad_value=255, nrow=2) 
         save_image(grid, file_path)
-        self.log[f'test/pre_post_mesh.png'].upload(file_path)
+        # self.log[f'test/pre_post_mesh.png'].upload(file_path)
 
 
         # # ##################
@@ -1352,7 +1354,7 @@ class Tester:
                 file_path_svg = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.svg')
                 plt.savefig(file_path, bbox_inches='tight')  
                 plt.savefig(file_path_svg, bbox_inches='tight')  
-                self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
+                # self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
 
 
     def dataset_split(self):
@@ -1480,54 +1482,13 @@ class Tester:
 
             print(f"Wrote age/split summary to {storage_path}")
 
-    # create age distribution graph of all data 
-
-        # age_range = self._config['data']['dataset_age_range']
-        # age_lower, age_upper = map(int, age_range.split('-'))
-
-        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_age_distribution_{age_range}.png')
-
-        if self._data_type == 'lyhm':
-            bins_num = 12
-        else:
-            bins_num = age_upper-age_lower + 2
-
-        # Define the bin edges
-        bin_edges = np.linspace(min(ages_list), max(ages_list)+1, bins_num)
-        bin_labels = [f"{int(bin_edges[i])}" for i in range(len(bin_edges))]
-        label_points = [bin_edges[i] for i in range(len(bin_edges))]
-        mid_points = [(bin_edges[i] + bin_edges[i+1]) / 2 for i in range(len(bin_edges)-1)]
-
-        if not os.path.exists(storage_path):
-
-            # Plot the histogram - 0-2 mean up to and including 2 years old for example
-            plt.figure(figsize=(10,6))
-            n, bins, patches = plt.hist(ages_list, bins=bin_edges, alpha=0.7, edgecolor="k")
-            # plt.hist(ages_list, bins=bin_edges, alpha=0.7)
-            plt.xticks(label_points, bin_labels)
-            plt.legend(loc='upper right')
-            plt.xlabel("Age (years)")
-            plt.ylabel("Frequency")
-            plt.title("Age Distribution")
-
-            # Annotate the bars with the frequency count and percentage
-            for i in range(len(n)):
-                plt.text(mid_points[i], n[i] + 5, f"{int(n[i])}\n({(n[i] / len(ages_list)) * 100:.1f}%)", 
-                        ha='center', va='bottom', color='black', fontsize=9)
-
-            plt.annotate(f'Total number of subjects: {total_subjects}', xy=(0.75, 0.95), xycoords='axes fraction')
-            plt.tight_layout()
-            plt.savefig(storage_path)
-            plt.clf()
-
-        else:
-            print(f"{storage_path} already exists.")
-
-        # self.log['dataset/distribution'].upload(storage_path)
-
     # create age split for train, val & test graph if it does not already exist 
 
         storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_data_split_{age_range}.png')
+        
+        # make dins
+        bins_num = age_upper - age_lower + 2
+        bin_edges = np.linspace(age_lower, age_upper+1, bins_num)
 
         if not os.path.exists(storage_path):
 
@@ -1545,24 +1506,6 @@ class Tester:
                 elif data_type == 'val':
                     val_ages.append(age)
             plt.clf()
-
-
-            # # Determine the overall min and max age across all datasets
-            # overall_min_age = min(ages_list)
-            # overall_max_age = max(ages_list)
-
-            # # Define the bin edges
-            # bin_edges = np.linspace(overall_min_age, overall_max_age, bins_num)
-
-            # # Plotting (overlaying bars)
-            # plt.figure(figsize=(10, 6))
-            # plt.hist(train_ages, bins=bin_edges, alpha=0.5, label='Train', edgecolor='black')
-            # plt.hist(val_ages, bins=bin_edges, alpha=0.5, label='Validation', edgecolor='black')
-            # plt.hist(test_ages, bins=bin_edges, alpha=0.5, label='Test', edgecolor='black')
-            # plt.legend(loc='upper right', bbox_to_anchor=(1, 0.8))
-            # plt.xlabel('Age')
-            # plt.ylabel('Frequency')
-            # plt.title('Age distribution in Train, Validation and Test sets')
 
             # Calculate the histogram counts for each split
             n_train, _ = np.histogram(train_ages, bins=bin_edges)
@@ -1588,7 +1531,7 @@ class Tester:
                 plt.text(mid_points[i], total_count + 0, f"{total_count}", 
                         ha='center', va='bottom', color='black', fontsize=9)
 
-            if 'combined' in self._data_type:
+            if 'combined' in self._data_type or 'friday' in self._data_type:
                 x = 0.02
             else:
                 x = 0.60
@@ -1605,9 +1548,7 @@ class Tester:
 
     # plot the original dataset split against age
 
-        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_dataset_split_{age_range}.png')
-
-        # bin_edges = bin_edges - 1
+        storage_path = os.path.join(precomputed_storage_path, f'{self._data_type}_original_dataset_split_{age_range}.png')
 
         if not os.path.exists(storage_path):
 
@@ -1624,7 +1565,7 @@ class Tester:
                     lyhm.append(age)
                 elif dataset == 'LSFM':
                     lsfm.append(age)
-                elif dataset == 'Paeds':
+                elif dataset == 'Necker':
                     necker.append(age)
                 elif dataset == 'FaceScape':
                     facescape.append(age)
@@ -1641,7 +1582,7 @@ class Tester:
 
             # Plotting (stacking bars)
             plt.figure(figsize=(10, 6))
-            if 'combine' in self._data_type:
+            if 'combine' in self._data_type or 'friday' in self._data_type:
                 plt.hist([lyhm, lsfm, necker, facescape, mimicme], bins=bin_edges, stacked=True, label=['LYHM', 'LSFM', 'Necker', 'FaceScape', 'MimicMe'], edgecolor='black', alpha=0.5)
             else:
                 plt.hist([lsfm, necker], bins=bin_edges, stacked=True, label=['LSFM', 'Necker'], edgecolor='black', alpha=0.5)
@@ -1661,13 +1602,18 @@ class Tester:
                 plt.text(mid_points[i], total_count + 0, f"{total_count}", 
                         ha='center', va='bottom', color='black', fontsize=9)
 
+            if 'combined' in self._data_type or 'friday' in self._data_type:
+                x = 0.02
+            else:
+                x = 0.60
+
             # Annotate min and max for each set
             plt.annotate(f'Total number of subjects: {total_subjects}', xy=(x, 0.95), xycoords='axes fraction')
-            if 'combine' in self._data_type:
+            if 'combine' in self._data_type  or 'friday' in self._data_type:
                 plt.annotate(f'LYHM count: {len(lyhm)}', xy=(x, 0.90), xycoords='axes fraction')
             plt.annotate(f'LSFM count: {len(lsfm)}', xy=(x, 0.85), xycoords='axes fraction')
             plt.annotate(f'Necker count: {len(necker)}', xy=(x, 0.80), xycoords='axes fraction')
-            if 'combine' in self._data_type:
+            if 'combine' in self._data_type  or 'friday' in self._data_type:
                 plt.annotate(f'FaceScape count: {len(facescape)}', xy=(x, 0.75), xycoords='axes fraction')
                 plt.annotate(f'MimicMe count: {len(mimicme)}', xy=(x, 0.70), xycoords='axes fraction')
 
@@ -1733,7 +1679,7 @@ class Tester:
                 if epoch % 10 == 0:
                     print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
                 losses.append(loss.item())
-                self.log['test/MLP_loss'].log(loss.item())
+                # self.log['test/MLP_loss'].log(loss.item())
             return losses
 
         losses = train_model(model, criterion, optimizer, train_loader)
@@ -1749,7 +1695,7 @@ class Tester:
 
         file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
         plt.savefig(file_path)
-        self.log['test/mlp_training_loss'].upload(file_path)
+        # self.log['test/mlp_training_loss'].upload(file_path)
 
         # Evaluate the model
         def evaluate_model(model, X, y):
@@ -1799,7 +1745,7 @@ class Tester:
         file_path_svg = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.svg')
         plt.savefig(file_path)
         plt.savefig(file_path_svg)
-        self.log['test/mlp_age_prediction'].upload(file_path)
+        # self.log['test/mlp_age_prediction'].upload(file_path)
 
         # Create a clean plot for the test set
         plt.figure(figsize=(6, 6))
@@ -1889,7 +1835,7 @@ class Tester:
                 if epoch % 10 == 0:
                     print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
                 losses.append(loss.item())
-                self.log['test/MLP_loss'].log(loss.item())
+                # self.log['test/MLP_loss'].log(loss.item())
             return losses
 
         losses = train_model(model, criterion, optimizer, train_loader)
@@ -1905,7 +1851,7 @@ class Tester:
 
         file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
         plt.savefig(file_path)
-        self.log['test/mlp_training_loss'].upload(file_path)
+        # self.log['test/mlp_training_loss'].upload(file_path)
 
         # Evaluate the model
         def evaluate_model(model, X, y):
@@ -1941,7 +1887,7 @@ class Tester:
 
         plt.savefig(file_path)
 
-        self.log['test/mlp_age_prediction'].upload(file_path)
+        # self.log['test/mlp_age_prediction'].upload(file_path)
 
     # def dataset_type(self, data_loader, datasets):
 
@@ -2049,7 +1995,7 @@ class Tester:
 
             file_path = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.png')
             plt.savefig(file_path)
-            self.log[f'test/tsne_feature_latents_subset_{name}'].upload(file_path)
+            # self.log[f'test/tsne_feature_latents_subset_{name}'].upload(file_path)
 
             if name == "all_dataset" or name == "all":
                 file_path_svg = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
@@ -2249,8 +2195,8 @@ class Tester:
             # print("Feature-level DCI results (id in age):", feature_dci_results_id_in_age)
             print("Feature-level R² results (age in id):", feature_r2_results_age_in_id)
             print("Feature-level R² results (id in age):", feature_r2_results_id_in_age)
-            self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
-            self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age                
+            # self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
+            # self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age                
     
         output_file = os.path.join(self._out_dir, 'dis_stats.txt')
         with open(output_file, 'w') as f:
@@ -2294,6 +2240,7 @@ class Tester:
 
         count = 0
 
+        # make sure this does thought whole batch
         for batch in tqdm.tqdm(data_loader):
             gt_ages = batch.age.numpy()
             file_names = batch.fname
@@ -2404,7 +2351,7 @@ class Tester:
             file_path = os.path.join(output_directory, f'proportions_{proportion_name}_{label_a}_vs_{label_b}.png')
             plt.savefig(file_path, bbox_inches='tight')
             plt.close()
-            self.log[f'test/proportions_{proportion_name}_{label_a}_vs_{label_b}'].upload(file_path)
+            # self.log[f'test/proportions_{proportion_name}_{label_a}_vs_{label_b}'].upload(file_path)
 
         # Plot each proportion for the three comparisons
         for proportion in proportion_columns:
@@ -2719,7 +2666,7 @@ class Tester:
             grid = make_grid(cat_tensors, padding=10, pad_value=1, nrow=max_batch_size)
             file_path = os.path.join(output_dir, f'{name}_pre_post.png')
             save_image(grid, file_path)
-            self.log[f'{name}_pre_post'].upload(file_path)
+            # self.log[f'{name}_pre_post'].upload(file_path)
 
 
             ##### AGE & DE-AGE MESHES - AGE TEST #####
@@ -2813,7 +2760,7 @@ class Tester:
             grid = make_grid(cat_tensors, padding=10, pad_value=1, nrow=max_batch_size)
             file_path = os.path.join(output_dir, f'{name}_age_de_age.png')
             save_image(grid, file_path)
-            self.log[f'test/{name}_age_de_age'].upload(file_path)
+            # self.log[f'test/{name}_age_de_age'].upload(file_path)
 
         df = pd.DataFrame(z_age_means)
 
@@ -2933,7 +2880,8 @@ if __name__ == '__main__':
     configurations = utils.get_config(
         os.path.join(output_directory, "config.yaml"))
 
-    logging = utils.get_config("logging.yaml")
+    # logging = utils.get_config("logging.yaml")
+    logging = None
 
     if not torch.cuda.is_available():
         device = torch.device('cpu')

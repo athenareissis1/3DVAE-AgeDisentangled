@@ -15,8 +15,8 @@ data:
         ###### FRIDAY UNIFIED DATASET #######
   template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
   precomputed_path: precomputed
-  dataset_type: faces_babies_faces_combined_friday
-  dataset_path: /raid/compass/athena/data/friday/smooth_tri_friday_unified_meshes
+  dataset_type: faces_friday_unified
+  dataset_path: /raid/compass/athena/data/friday_unified_meshes_subset_0_17
   # dataset_path: /raid/compass/athena/data/friday/friday_unified_meshes
   dataset_metadata_path: preprocessing_data/friday_all_datasets.csv 
       ###### SYNDROMIC/NON-SYNDROMIC DATASET #######
@@ -35,12 +35,12 @@ data:
   std_pca_latent: 3                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
   number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
   number_of_workers: 8
-  swap_features: False #True                                                           # if True, the resulting batch size will be batch_size^2
+  swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
   weight_imbalanced_ages: False #True
   
 optimization:
   epochs: 600
-  batch_size: 16 #4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
+  batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
   lr: 1e-4
   weight_decay: 0
 
@@ -51,7 +51,7 @@ optimization:
   gaussian_weight: 0                                                            # alternative to KL divergence
   gaussian_mean_weight: 0
 
-  latent_consistency_weight: 0 #2 #5                                                # if 0, no latent consistency loss is used
+  latent_consistency_weight: 2 #5                                                # if 0, no latent consistency loss is used
   latent_consistency_eta1: 0.5
   latent_consistency_eta2: 0.5
 
@@ -73,7 +73,7 @@ optimization:
   age_weight: 8 #1    
   age_weight_seperation: ['0:4', '1:3', '2:3', '3:2', '4:2', '15:2', '16:2','17:2']                          # age weight changes for specific years for training the encoder to put more pressure on specific ages
 
-  age_remove_mlp_weight: 0.05                                                         # if 0, no age remove loss is used (removing age from id latents)
+  age_remove_mlp_weight: 0 #0.05                                                         # if 0, no age remove loss is used (removing age from id latents)
   age_remove_mlp_grl_weight: 0.3 #0.5                                                   # if 0, no age prediction loss is used (predicting age from age latents)
   
   age_recon_weight: 0 #0.05      
@@ -89,7 +89,7 @@ optimization:
   adversarial_weight: 0 #  
   adversarial_lr: 1e-4    
 
-  adversarial_latent_weight: 0.05
+  adversarial_latent_weight: 0 #0.05
   adversarial_latent_grl_weight: 0.3 #0.5                                               # if using GRL for adversarial latent loss
   adversarial_latent_lr: 1.25e-4
 
@@ -107,18 +107,18 @@ model:
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
   latent_size: 45                                                               # size of the latent vector
-  age_per_feature: False #True                                                        # if True, a single age latent is added per feature. 
-  age_latent_size: 1 #9                                                         # size of additional age latents
+  age_per_feature: True                                                        # if True, a single age latent is added per feature. 
+  age_latent_size: 9                                                         # size of additional age latents
   pre_z_sigmoid: False
 
   age_disentanglement: True   
   age_seperation: False #True                                                  # if True, an extra feature is added to the latent vector that represents age & age related losses are added
-  age_remove_loss_mlp: True
+  age_remove_loss_mlp: False #True
   age_reconstruction_mlp: False #True
   contrastive_loss: False #True                                                        # if True, contrastive loss is used
   mi_loss: False #True
   adversarial_loss: False #True                                                        # if True, adversarial loss is used
-  adversarial_loss_latent: True
+  adversarial_loss_latent: False #True
   conditional_vae: False #True
   cycle_consistency: False #True
   disease_classification: False #True

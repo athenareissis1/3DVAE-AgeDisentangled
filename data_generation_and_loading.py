@@ -373,7 +373,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         else:
             raise Exception("train, val and test are supported data types")
 
-        self.data, self.slices = torch.load(data_path)
+        self.data, self.slices = torch.load(data_path, weights_only=False)
         if self.transform:
             self.data = [self.transform(td) for td in self.data]
 
@@ -401,18 +401,20 @@ class MeshInMemoryDataset(InMemoryDataset):
         return files
     
     def file_id(self, fname):
-        if 'babies' in str(self._config_data['dataset_type']):
-            file_id = fname.replace("_", "").split('.', 1)[0]
-        else:
-            file_id = fname.split("_")[0].lstrip('0') 
 
-        if 'combined' in str(self._config_data['dataset_type']):
-            if 'friday' in str(self._config_data['dataset_type']):
-                # file_id = file_id.split('f', 1)[-1]
-                file_id = fname.split('.', 1)[0]
-            else:
-                file_id = int(file_id)
-        
+        file_id = fname.split('.', 1)[0]
+        # if 'babies' in str(self._config_data['dataset_type']):
+        #     file_id = fname.replace("_", "").split('.', 1)[0]
+        # # else:
+        # #     file_id = fname.split("_")[0].lstrip('0') 
+
+        # if 'combined' in str(self._config_data['dataset_type']):
+        #     file_id = int(file_id)
+
+        # if 'friday' in str(self._config_data['dataset_type']):
+        #     # file_id = file_id.split('f', 1)[-1]
+        #     file_id = fname.split('.', 1)[0]
+                
         return file_id 
 
     def split_data(self, data_split_list_path):
@@ -492,7 +494,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         normalization_dict_path = os.path.join(
             self._precomputed_storage_path, f'norm_{self._data_type}.pt')
         try:
-            normalization_dict = torch.load(normalization_dict_path)
+            normalization_dict = torch.load(normalization_dict_path, weights_only=False)
         except FileNotFoundError:
             assert self._dataset_type == 'train'
             train_verts = None
@@ -538,6 +540,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         storage_path = os.path.join(self._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
 
         for i in range(len(self._train_names)):
+
             train_id.append(self.file_id(self._train_names[i]))
         for i in range(len(self._val_names)):
             val_id.append(self.file_id(self._val_names[i]))
