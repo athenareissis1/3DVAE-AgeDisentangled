@@ -74,6 +74,7 @@ class ModelManager(torch.nn.Module):
         self._latent_size = configurations['model']['latent_size']
         self._age_latent_size = configurations['model']['age_latent_size']
         self._cycle_consistency = configurations['model']['cycle_consistency']
+        self._reencode_latent = configurations['model']['reencode_latent']
         self._disease_classification = configurations['model']['disease_classification']
 
         self.to_mm_const = configurations['data']['to_mm_constant']
@@ -142,6 +143,8 @@ class ModelManager(torch.nn.Module):
         # self._w_adversarial_latent_remove_id_loss = float(self._optimization_params['adversarial_latent_remove_id_weight'])
         self._w_adversarial_larent_grl = float(self._optimization_params['adversarial_latent_grl_weight'])
         self._w_tc_loss = float(self._optimization_params['tc_weight'])
+        self._w_reencode_id_consistency_weight = float(self._optimization_params['reencode_id_consistency_weight'])
+        self._w_reencode_age_consistency_weight = float(self._optimization_params['reencode_age_consistency_weight'])
         self._w_disease_classification_loss = float(self._optimization_params['disease_classification_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
@@ -254,6 +257,11 @@ class ModelManager(torch.nn.Module):
             assert self._age_disentanglement
             assert self._age_seperation
             assert self._age_per_feature
+
+        if self._reencode_latent:
+            assert self._age_disentanglement
+            assert self._w_reencode_id_consistency_weight > 0
+            assert self._w_reencode_age_consistency_weight > 0
 
         if self._disease_classification:
             assert self._w_disease_classification_loss > 0
@@ -614,6 +622,12 @@ class ModelManager(torch.nn.Module):
                 discriminator_loss_latent_real = torch.tensor(0, device=device)
                 discriminator_loss_latent_fake = torch.tensor(0, device=device)
 
+            if self._reencode_latent:
+                loss_edit_id_consistency, loss_edit_age_consistency = self._compute_edit_age_reencode_losses(mu, data.norm_age)
+            else:
+                loss_edit_id_consistency = torch.tensor(0, device=device)
+                loss_edit_age_consistency = torch.tensor(0, device=device)
+
             if self._disease_classification:
                 loss_disease_class = self._compute_disease_classification_loss(mu, data.disease_label)
             else:
@@ -633,6 +647,8 @@ class ModelManager(torch.nn.Module):
             self._w_latent_similarity * loss_latent_similarity + \
             self._w_adversarial_loss * loss_adversarial + \
             self._w_adversarial_latent_loss * loss_adversarial_latent + \
+            self._w_reencode_id_consistency_weight * loss_edit_id_consistency + \
+            self._w_reencode_age_consistency_weight * loss_edit_age_consistency + \
             self._w_disease_classification_loss * loss_disease_class
 
         if train:
@@ -661,6 +677,8 @@ class ModelManager(torch.nn.Module):
                 'discriminator_latent_real': discriminator_loss_latent_real.item(),
                 'discriminator_latent_fake': discriminator_loss_latent_fake.item(),
                 # 'tc': loss_tc.item(),
+                'edit_id_consistency': loss_edit_id_consistency.item(),
+                'edit_age_consistency': loss_edit_age_consistency.item(),
                 'disease_classification': loss_disease_class.item(),
                 'tot': loss_tot.item()}
 
@@ -1405,6 +1423,64 @@ class ModelManager(torch.nn.Module):
         #############  ############# 
 
         return g_loss, d_loss
+
+    def _compute_edit_age_reencode_losses(self, mu, gt_age_norm):
+        """
+        Encode -> change age -> decode -> re-encode.
+
+        Loss 1:
+            Keep the identity latents of the re-encoded edited sample close to
+            the original identity latents.
+
+        Loss 2 (optional but recommended):
+            Make the re-encoded age latents match the target edited age.
+        """
+
+        # if self._disease_classification:
+        #     mu = mu[:, :-1]
+
+        if self._swap_feature:
+            mu = mu[self.batch_diagonal_idx]
+
+        bs = mu.size(0)
+
+        original_id = mu[:, :-self._age_latent_size]
+        # original_age = mu[:, -self._age_latent_size:]
+
+        # Use a derangement so every sample gets a different target age.
+        while True:
+            perm = torch.randperm(bs, device=mu.device)
+            if not torch.any(perm == torch.arange(bs, device=mu.device)):
+                break
+
+        # Target edited age from GT age, repeated across all age-per-feature dims.
+        target_age_scalar = gt_age_norm[perm].to(dtype=torch.float32).view(-1, 1)
+        target_age_latents = target_age_scalar.repeat(1, self._age_latent_size)
+
+        # If you prefer to edit using encoder-produced age latents instead of GT age,
+        # replace the line above with:
+        # target_age_latents = original_age[perm].detach()
+
+        edited_latent = torch.cat([original_id, target_age_latents], dim=1)
+
+        # Decode edited latent and re-encode it.
+        edited_reconstruction = self._net.decode(edited_latent)
+        reencoded_mu, _ = self._net.encode(edited_reconstruction)
+
+        # if self._disease_classification:
+        #     reencoded_mu = reencoded_mu[:, :-1]
+
+        reencoded_id = reencoded_mu[:, :-self._age_latent_size]
+        reencoded_age = reencoded_mu[:, -self._age_latent_size:]
+
+        # Identity should stay the same after age editing.
+        loss_edit_id = self.compute_mse_loss(reencoded_id, original_id.detach())
+
+        # Optional but recommended: the edited sample should re-encode to the target age.
+        loss_edit_age = self.compute_mse_loss(reencoded_age, target_age_latents.detach())
+
+        return loss_edit_id, loss_edit_age
+
 
     def _compute_disease_classification_loss(self, mu, disease_labels):
 

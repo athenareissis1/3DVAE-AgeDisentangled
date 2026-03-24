@@ -93,7 +93,10 @@ optimization:
   adversarial_latent_grl_weight: 0.3 #0.5                                               # if using GRL for adversarial latent loss
   adversarial_latent_lr: 1.25e-4
 
-  tc_weight: 0 #1                                                                # if not 0 then adversarial_latent_weight needs to be 0              
+  tc_weight: 0 #1                                                                # if not 0 then adversarial_latent_weight needs to be 0  
+
+  reencode_id_consistency_weight: 0.1
+  reencode_age_consistency_weight: 0.05            
 
   disease_classification_weight: 0 #1                                               # if 0, no disease classification loss is used
 
@@ -121,6 +124,7 @@ model:
   adversarial_loss_latent: False #True
   conditional_vae: False #True
   cycle_consistency: False #True
+  reencode_latent: True
   disease_classification: False #True
 
   discriminator_type: "Spiral" # "Spiral" "MLP"

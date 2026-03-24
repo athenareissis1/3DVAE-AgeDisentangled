@@ -275,7 +275,8 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
     """
 
     # if "unified" in folder_path:
-    if dataset_type == 'combined' or dataset_type == 'friday_combined':
+    dataset_type = "friday_unified"
+    if dataset_type == 'combined' or dataset_type == 'friday_unified':
         gn = (26021, 0.0978797972202301, 0.736789166927337)
         go_left = (31596, 0.14787405729293823, 0.204847782850265)
         go_right = (13220, 0.4579116106033325, 0.14548911154270172)
@@ -284,7 +285,7 @@ def calculate_distances_in_folder(folder_path, template_path, reconstructions, m
         zy_left = (30477, 0.23432278633117676, 0.5406232476234436)
         zy_right = (3468, 0.6796667575836182, 0.24974024295806885) 
 
-    # else if dataset_type = "not_combined":
+    # if dataset is not a combined dataset
     else:
         gn = (53157, 0.3662373423576355, 0.5330255627632141)
         go_left = (54815, 0.35922741889953613, 0.6188949346542358)
@@ -352,13 +353,13 @@ def add_proportions_age_gender_to_csv(folder_path, dataset_type, output_director
     """
     proportions_names = ["n-sto:n-gn", "n-sto:sto-gn", "sto-gn:n-gn", "zy_right-zy_left:go-right-go-left"]
 
-    metadata_df = pd.read_csv(dataset_metadata_path)
-
     input_csv_path = os.path.join(output_directory, f"{dataset_type}_distances.csv")
     output_csv_path = os.path.join(output_directory, f"{dataset_type}_distances_with_proportions_age_gender.csv")
 
     # Read the CSV files
     df = pd.read_csv(input_csv_path)
+
+    metadata_df = pd.read_csv(dataset_metadata_path)
 
     # Calculate proportions for each row and format them as 1:x
     for proportion_name in proportions_names:
@@ -369,25 +370,32 @@ def add_proportions_age_gender_to_csv(folder_path, dataset_type, output_director
     if folder_path != None:
         # add age and gender column to the dataframe
         ages_dict = pd.Series(metadata_df.AgeYears.values, index=metadata_df.id).to_dict()
-        if dataset_type == "combined":
-            df['age'] = df['Mesh File'].str.replace(".obj", "").astype(int).map(ages_dict)
-            gender_dict = pd.Series(metadata_df.gender.values, index=metadata_df.id).to_dict()
-            df['gender'] = df['Mesh File'].str.replace(".obj", "").astype(int).map(gender_dict)
+        if dataset_type == "combined" or dataset_type == "friday_unified":
+            # df['age'] = df['Mesh File'].str.replace(".obj", "").astype(int).map(ages_dict)
+            # gender_dict = pd.Series(metadata_df.gender.values, index=metadata_df.id).to_dict()
+            # df['gender'] = df['Mesh File'].str.replace(".obj", "").astype(int).map(gender_dict)
+            df['age'] = df['Mesh File'].str.replace(".obj", "").map(ages_dict)
+            gender_dict = pd.Series(metadata_df.Gender.values, index=metadata_df.id).to_dict()
+            df['gender'] = df['Mesh File'].str.replace(".obj", "").map(gender_dict)
         else:
             df['age'] = df['Mesh File'].str.replace(".obj", "").str.replace("_", "").map(ages_dict)
             gender_dict = pd.Series(metadata_df.gender.values, index=metadata_df.id).to_dict()
             df['gender'] = df['Mesh File'].str.replace(".obj", "").str.replace("_", "").map(gender_dict)
     else:
         # Extract age from Mesh File and update Mesh File column
-        df['age'] = df['Mesh File'].apply(lambda x: x.split('_')[1])
-        df['Mesh File'] = df['Mesh File'].apply(lambda x: x.split('_')[0])
-        
-        # Map gender using the updated Mesh File column
-        gender_dict = pd.Series(metadata_df.gender.values, index=metadata_df.id).to_dict()
-        if dataset_type == "combined":
-            df['gender'] = df['Mesh File'].apply(lambda x: gender_dict.get(int(x), 'Unknown'))
-        else:
-            df['gender'] = df['Mesh File'].apply(lambda x: gender_dict.get(x, 'Unknown'))
+        df['age'] = df['Mesh File'].apply(lambda x: x.split('_')[-1])
+        # "f_293_0" -> ["f", "293"] -> "f_293"
+        df['Mesh File'] = df['Mesh File'].apply(lambda x: '_'.join(x.split('_')[:-1]))
+        gender_dict = pd.Series(metadata_df.Gender.values,
+                                index=metadata_df.id.astype(str)).to_dict()
+        df['gender'] = df['Mesh File'].apply(lambda x: gender_dict.get(x, 'Unknown'))
+
+        # # Map gender using the updated Mesh File column
+        # gender_dict = pd.Series(metadata_df.Gender.values, index=metadata_df.id).to_dict()
+        # if dataset_type == "combined":
+        #     df['gender'] = df['Mesh File'].apply(lambda x: gender_dict.get(int(x), 'Unknown'))
+        # else:
+        #     df['gender'] = df['Mesh File'].apply(lambda x: gender_dict.get(x, 'Unknown'))
 
 
     # Save the updated DataFrame to a new CSV file
@@ -613,9 +621,9 @@ if __name__ == "__main__":
 
     # ply_folder_path = "/raid/compass/athena/data/PLY_friday_unified_meshes_subset_0_17"
     # obj_to_ply(dataset_folder_path, ply_folder_path, dataset_metadata_path)
-    dataset_split_obj_to_ply(dataset_split_path)
+    # dataset_split_obj_to_ply(dataset_split_path)
 
-    # calculate_distances_in_folder(dataset_folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
-    # add_proportions_age_gender_to_csv(dataset_folder_path, dataset_type, output_directory, dataset_metadata_path)
-    # distance_proportion_averages(dataset_type, output_directory)
+    calculate_distances_in_folder(dataset_folder_path, template_path, reconstructions, mesh_names, dataset_type, output_directory)
+    add_proportions_age_gender_to_csv(dataset_folder_path, dataset_type, output_directory, dataset_metadata_path)
+    distance_proportion_averages(dataset_type, output_directory)
 
