@@ -3,6 +3,7 @@ import argparse
 import shutil
 import tqdm
 import torch.nn
+import wandb
 
 import utils
 from data_generation_and_loading import FaceGenerator, BodyGenerator
@@ -19,8 +20,33 @@ parser.add_argument('--generate_data', action='store_true')
 parser.add_argument('--resume', action='store_true')
 opts = parser.parse_args()
 config = utils.get_config(opts.config)
-# logging = utils.get_config("logging.yaml")
-logging = None
+
+##### INITALISE LOGGING #####
+
+# logging_config = utils.get_config("logging.yaml")
+
+# Set these BEFORE wandb.init()
+os.environ["WANDB_DIR"] = config['wandb']['dir']
+os.environ["WANDB_DISABLE_CODE"] = "true"
+os.environ["WANDB_CONSOLE"] = "off"
+
+wandb_run = wandb.init(
+    entity=config['wandb']['entity'],
+    project=config['wandb']['project'],
+    name=opts.id,
+    id=opts.id,
+    dir=os.environ["WANDB_DIR"],
+    save_code=False,
+    resume="allow",
+    settings=wandb.Settings(_disable_stats=True),
+    config=config
+)
+
+# assert logging_config is not None
+assert opts.id is not None
+assert wandb_run is not None
+
+#############################
 
 if opts.id != 'none':
     model_name = opts.id
@@ -29,11 +55,7 @@ else:
 output_directory = os.path.join(opts.output_path + "/outputs", model_name)
 checkpoint_dir = utils.prepare_sub_folder(output_directory)
 
-# writer = SummaryWriter(output_directory + '/logs')
-writer = None
 shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml'))
-
-log = None
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
@@ -64,7 +86,8 @@ loss_keys = ['reconstruction', 'kl', 'dip', 'factor',
         'latent_consistency', 'laplacian', 'age', 'age_remove_mlp', 
         'age_reconstruction_mlp', 'contrastive', 'mi', 'latent_similarity', 
         'adversarial', 'adversarial_latent', 'discriminator', 'discriminator_latent', 
-        'discriminator_latent_real', 'discriminator_latent_fake', 'disease_classification', 'tot']
+        'discriminator_latent_real', 'discriminator_latent_fake', 'edit_id_consistency', 
+        'edit_age_consistency', 'cycle_recon_consistency', 'disease_classification', 'tot']
 
 manager = ModelManager(
     configurations=config, device=device,
@@ -83,24 +106,24 @@ if opts.resume:
 else:
     start_epoch = 0
 
-# manager.log_hyperparameters(log, config, logging)
+# manager.log_hyperparameters(wandb_run, config, logging_config)
 
 for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     manager.run_epoch(train_loader, device, train=True)
-    manager.log_losses(writer, log, epoch, 'train')
+    manager.log_losses(wandb_run, epoch, 'train')
 
     manager.run_epoch(validation_loader, device, train=False)
-    manager.log_losses(writer, log, epoch, 'validation')
+    manager.log_losses(wandb_run, epoch, 'validation')
 
     if (epoch + 1) % config['logging_frequency']['tb_renderings'] == 0:
-        manager.log_images(train_visualization_batch, writer, log, epoch,
+        manager.log_images(train_visualization_batch, wandb_run, epoch,
                            normalization_dict, 'train', error_max_scale=2)
-        manager.log_images(validation_visualization_batch, writer, log, epoch,
+        manager.log_images(validation_visualization_batch, wandb_run, epoch,
                            normalization_dict, 'validation', error_max_scale=2)
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)
 
-# log.stop()
+wandb_run.finish()
 
 Tester(manager, normalization_dict, train_loader, validation_loader, test_loader,
-       output_directory, config, logging)()
+       output_directory, config, wandb_run)()

@@ -95,8 +95,9 @@ optimization:
 
   tc_weight: 0 #1                                                                # if not 0 then adversarial_latent_weight needs to be 0  
 
-  reencode_id_consistency_weight: 0.1
-  reencode_age_consistency_weight: 0.05            
+  reencode_id_consistency_weight: 0 #0.1
+  reencode_age_consistency_weight: 0 #0.05  
+  cycle_consistency_weight: 0.1          
 
   disease_classification_weight: 0 #1                                               # if 0, no disease classification loss is used
 
@@ -123,8 +124,8 @@ model:
   adversarial_loss: False #True                                                        # if True, adversarial loss is used
   adversarial_loss_latent: False #True
   conditional_vae: False #True
-  cycle_consistency: False #True
-  reencode_latent: True
+  reencode_latent: False #True
+  cycle_consistency: True
   disease_classification: False #True
 
   discriminator_type: "Spiral" # "Spiral" "MLP"
@@ -135,6 +136,11 @@ model:
 logging_frequency:
   tb_renderings: 50
   save_weights: 200
+
+wandb:
+  project: SAD-VAE
+  entity: athenareissis-ucl
+  dir: /raid/compass/athena/wandb
 
 testing:
   age_latent_changing: [0, 0.00, 4.00, 8.00, 12.00, 17.00]                               # first value will always change to what the original latent age value is

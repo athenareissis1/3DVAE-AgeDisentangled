@@ -7,6 +7,7 @@ import torch
 import pytorch3d.loss
 import random
 # import neptune
+import wandb
 
 # import tensorflow as tf
 import numpy as np
@@ -50,16 +51,10 @@ import utils
 
 class Tester:
     def __init__(self, model_manager, norm_dict,
-                 train_load, val_load, test_load, out_dir, config, logging):
+                 train_load, val_load, test_load, out_dir, config, wandb_run): #, logging_config):
     
-        # self.log = neptune.init_run(
-        #     project=logging['logging']['neptune_project'], 
-        #     api_token=logging['logging']['neptune_api'],
-        #     custom_run_id=os.path.basename(out_dir)
-        #     )
-
-        self.log = None
- 
+        self.wandb_run = wandb_run
+        # self._logging_config = logging_config
         self._manager = model_manager
         self._manager.eval()
         self._device = model_manager.device
@@ -67,7 +62,6 @@ class Tester:
         self._normalized_data = config['data']['normalize_data']
         self._out_dir = out_dir
         self._config = config
-        self._logging = logging
         self._train_loader = train_load
         self._val_loader = val_load
         self._test_loader = test_load
@@ -116,21 +110,21 @@ class Tester:
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
 
-        # # TEST TO RUN (run all on val set then once model is finalised move to test set)
-        # self.per_variable_range_experiments(use_z_stats=False)
-        # self.random_generation_and_rendering(n_samples=16, age=None)
+        # TEST TO RUN (run all on val set then once model is finalised move to test set)
+        self.per_variable_range_experiments(use_z_stats=False)
+        self.random_generation_and_rendering(n_samples=16, age=None)
 
-        # if self._config['model']['age_disentanglement']:
-        #     static_ages = [0, 4, 8, 12, 17]
-        #     for age in static_ages:
-        #         self.random_generation_and_rendering(n_samples=16, age=age)
+        if self._config['model']['age_disentanglement']:
+            static_ages = [0, 4, 8, 12, 17]
+            for age in static_ages:
+                self.random_generation_and_rendering(n_samples=16, age=age)
 
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
             eval_loader = self._test_loader # self._val_loader,
-            # self.dataset_split()
-            # self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
-            # self.age_prediction_MLP(self._train_loader, eval_loader)
-            # self.age_latent_changing(eval_loader)
+            self.dataset_split()
+            self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
+            self.age_prediction_MLP(self._train_loader, eval_loader)
+            self.age_latent_changing(eval_loader)
             self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
             self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
             self.proportions(eval_loader)
@@ -140,10 +134,10 @@ class Tester:
             # self.relatives_aging_diff_new()
             # self.relatives_aging()
         
-        # self._manager.log_hyperparameters(self.log, self._config, self._logging)
+        # self._manager.log_hyperparameters(self.log, self._config, self._logging_config)
         
         # self.log.stop()
-            
+        self.wandb_run.finish()
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -255,10 +249,10 @@ class Tester:
             frames = torch.cat([renderings, differences_renderings], dim=-1)
             all_frames_age = torch.cat([frames, torch.zeros_like(frames)[:2, ::]])
                 
-            
-            file_path_age = os.path.join(self._out_dir, 'latent_exploration_all_age_latents_[min-max].mp4')
-            write_video(file_path_age, all_frames_age.permute(0, 2, 3, 1) * 255, fps=4)
-            # self.log['test/latent_exploration_all_age_latents_[min-max].mp4'].upload(file_path_age)
+            file_name = 'latent_exploration_all_age_latents_[min-max].mp4'
+            file_path = os.path.join(self._out_dir, file_name)
+            write_video(file_path, all_frames_age.permute(0, 2, 3, 1) * 255, fps=4)
+            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[min-max]_vid": wandb.Video(file_path, format="mp4")})
 
         # changing all age latent values [0-17]
 
@@ -287,17 +281,18 @@ class Tester:
 
             frames = torch.cat([renderings, differences_renderings], dim=-1)
 
-            file_path = os.path.join(self._out_dir, 'latent_exploration_all_age_latents_[0-17].mp4')
+            file_name = 'latent_exploration_all_age_latents_[0-17].mp4'
+            file_path = os.path.join(self._out_dir, file_name)
             write_video(file_path, frames.permute(0, 2, 3, 1) * 255, fps=4)
-            # self.log['test/latent_exploration_all_age_latents_[0-17].mp4'].upload(file_path)
+            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[0-17]_vid": wandb.Video(file_path, format="mp4")})
 
             # Create a .png with all meshes in one row and difference maps in the second row
             combined_frames = torch.cat([renderings, differences_renderings], dim=0)
             grid = make_grid(combined_frames, nrow=len(age_range), padding=10, pad_value=1)
-            file_path_png = os.path.join(self._out_dir, 'latent_exploration_all_age_latents_[0-17].png')
-            save_image(grid, file_path_png)
-            # self.log['test/latent_exploration_all_age_latents_[0-17].png'].upload(file_path_png)
-
+            file_name = 'latent_exploration_all_age_latents_[0-17].png'
+            file_path = os.path.join(self._out_dir, file_name)
+            save_image(grid, file_path)
+            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[0-17]_fig": wandb.Image(file_path)})
 
         #### NOT AGE TESTS ####
         n_steps = 10
@@ -327,10 +322,10 @@ class Tester:
             all_frames.append(
                 torch.cat([frames, torch.zeros_like(frames)[:2, ::]]))
 
-        file_path = os.path.join(self._out_dir, 'latent_exploration.mp4')
+        file_name = 'latent_exploration.mp4'
+        file_path = os.path.join(self._out_dir, file_name)
         write_video(file_path, torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        # self.log['test/latent_exploration.mp4'].upload(file_path)
-
+        self.wandb_run.log({"latent_exploration/latent_exploration_vid": wandb.Video(file_path, format="mp4")})
 
         # Same video as before, but effects of perturbing each latent variables
         # are shown in the same frame. Only error maps are shown.
@@ -359,12 +354,16 @@ class Tester:
             grid_frames.append(
                 make_grid(stacked_frames[:, i, ::], padding=10,
                           pad_value=1, nrow=grid_nrows))
-        save_image(grid_frames[-1],
-                   os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
-        # self.log['test/latent_exploration_tiled.png'].upload(os.path.join(self._out_dir, 'latent_exploration_tiled.png'))
-        file_path = os.path.join(self._out_dir, 'latent_exploration_tiled.mp4')
+            
+        file_name = 'latent_exploration_tiled.png'
+        file_path = os.path.join(self._out_dir, file_name)
+        save_image(grid_frames[-1], file_path)
+        self.wandb_run.log({"latent_exploration/latent_exploration_tiled_fig": wandb.Image(file_path)})
+
+        file_name = 'latent_exploration_tiled.mp4'
+        file_path = os.path.join(self._out_dir, file_name)
         write_video(file_path, torch.stack(grid_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=1)
-        # self.log['test/latent_exploration_tiled.mp4'].upload(file_path)
+        self.wandb_run.log({"latent_exploration/latent_exploration_tiled_vid": wandb.Video(file_path, format="mp4")})
 
         # Same as before, but only output meshes are used
         stacked_frames_meshes = torch.stack(all_renderings)
@@ -373,9 +372,12 @@ class Tester:
             grid_frames_m.append(
                 make_grid(stacked_frames_meshes[:, i, ::], padding=10,
                           pad_value=1, nrow=grid_nrows))
-        file_path = os.path.join(self._out_dir, 'latent_exploration_outs_tiled.mp4')
+            
+        file_name = 'latent_exploration_outs_tiled.mp4'
+        file_path = os.path.join(self._out_dir, file_name)
         write_video(file_path, torch.stack(grid_frames_m, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        # self.log['test/latent_exploration_outs_tiled.mp4'].upload(file_path)
+        self.wandb_run.log({"latent_exploration/latent_exploration_outs_tiled_vid": wandb.Video(file_path, format="mp4")})
+
 
         # Create a plot showing the effects of perturbing latent variables in
         # each region of the face
@@ -395,14 +397,19 @@ class Tester:
                              col_wrap=4, height=3)
 
         grid.map(plt.plot, "z_var", "mean_dist", marker="o")
-        plt.savefig(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
-        # self.log['test/latent_exploration_split.svg'].upload(os.path.join(self._out_dir, 'latent_exploration_split.svg'))
+        file_name = 'latent_exploration_split.svg'
+        svg_path = os.path.join(self._out_dir, file_name)
+        plt.savefig(svg_path)
+        fig = plt.gcf()
+        self.wandb_run.log({"latent_exploration/latent_exploration_split_svg": wandb.Image(fig)})
 
         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
                     hue="region", palette=self._palette)
-        plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
-        # plt.savefig(os.path.join(self._out_dir, 'latent_exploration.png'))
-        # self.log['test/latent_exploration.png'].upload(os.path.join(self._out_dir, 'latent_exploration.png'))
+        file_name = 'latent_exploration.svg'
+        svg_path = os.path.join(self._out_dir, file_name)
+        plt.savefig(svg_path)
+        fig = plt.gcf()  # current figure
+        self.wandb_run.log({"latent_exploration/latent_exploration_svg": wandb.Image(fig)})
 
     def random_latent(self, n_samples, z_range_multiplier=1, age=None):
         if self._is_vae:  # sample from normal distribution if vae
@@ -439,10 +446,12 @@ class Tester:
         grid = make_grid(renderings, padding=10, pad_value=1)
         if age is None:
             file_path = os.path.join(self._out_dir, 'random_generation.png')
+            save_image(grid, file_path)
+            self.wandb_run.log({"random/random_generation": wandb.Image(file_path)})
         else:
             file_path = os.path.join(self._out_dir, f'random_generation_age_{age}.png')
-        save_image(grid, file_path)
-        # self.log['test/random_generation'].upload(file_path)
+            save_image(grid, file_path)
+            self.wandb_run.log({f"random/random_generation_age_{age}": wandb.Image(file_path)})
 
     def random_generation_and_save(self, n_samples=16, z_range_multiplier=1):
         out_mesh_dir = os.path.join(self._out_dir, 'random_meshes')
@@ -1049,14 +1058,14 @@ class Tester:
 
         batch = next(iter(eval_loader))
 
+        original_ages = batch.age.numpy()
+
         if self._config['data']['swap_features']:
             batch = batch.x[self._manager.batch_diagonal_idx, ::] 
         elif self._config['optimization']['batch_size'] == 16:
             batch = batch.x[:4, ::]
         else:
             batch = batch.x
-
-        original_ages = batch.age.numpy()
 
         z = self._manager.encode(batch.to(self._device)).detach()
 
@@ -1142,7 +1151,7 @@ class Tester:
             file_path = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}.png')
             grid = make_grid(stacked_frames, padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1) 
             save_image(grid, file_path)
-            # self.log[f'age_latent_changing_{age_latent_ranges_original}_{name}'].upload(file_path)
+            self.wandb_run.log({f"age_changing/age_latent_changing_{name}": wandb.Image(file_path)})
 
         # make per subject image for chaning each age latent and all age latents
         def make_subject_image(subject_frames, age_latent_ranges_original, name):
@@ -1155,11 +1164,13 @@ class Tester:
             file_path_1 = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part1.png')
             grid_1 = make_grid(torch.stack(first_half), padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1)
             save_image(grid_1, file_path_1)
+            self.wandb_run.log({f"age_changing/age_latent_changing_{name}_part1": wandb.Image(file_path_1)})
 
             # Save the second half
             file_path_2 = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part2.png')
             grid_2 = make_grid(torch.stack(second_half), padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1)
             save_image(grid_2, file_path_2)
+            self.wandb_run.log({f"age_changing/age_latent_changing_{name}_part2": wandb.Image(file_path_2)})
 
         if self._config['model']['age_per_feature']:
             make_subject_image(all_subject_1, age_latent_ranges_original, 'subject_1')
@@ -1169,7 +1180,6 @@ class Tester:
 
         line_to_add = 'age_latent_changing original ages: ' + str(original_ages)
         filename = os.path.join(self._out_dir, 'results.txt')
-        # self.log['age_latent_changing_original_ages'].upload(str(original_ages))
 
         if not os.path.exists(filename):
             with open(filename, 'w') as file:
@@ -1210,8 +1220,7 @@ class Tester:
         file_path = os.path.join(self._out_dir, 'pre_post_mesh.png')
         grid = make_grid(stacked_frames, padding=padding_value, pad_value=255, nrow=2) 
         save_image(grid, file_path)
-        # self.log[f'test/pre_post_mesh.png'].upload(file_path)
-
+        self.wandb_run.log({"recon/pre_post_mesh": wandb.Image(file_path)})
 
         # # ##################
 
@@ -1487,12 +1496,10 @@ class Tester:
                     test_name =  test_name + '_train'
                 else:
                     test_name = test_name + '_eval'
-                # file_path = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.png')
                 file_path_svg = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.svg')
-                # plt.savefig(file_path, bbox_inches='tight')  
-                plt.savefig(file_path_svg, bbox_inches='tight')  
-                # self.log[f'test/{test_name}_accuracy_scatter_plot'].upload(file_path)
-
+                plt.savefig(file_path_svg, bbox_inches='tight')
+                fig = plt.gcf()
+                self.wandb_run.log({f"encoder_decoder/{test_name}_accuracy_scatter_plot": wandb.Image(fig)})
 
     def dataset_split(self):
 
@@ -1758,8 +1765,6 @@ class Tester:
         else:
             print(f"{storage_path} already exists.")
 
-        # self.log['dataset/distribution_split'].upload(storage_path)
-
     def age_prediction_MLP(self, train_loader, eval_loader):
         """
         This function trains a MLP model to predict the age of the subjects based on the feature latents. 
@@ -1816,7 +1821,6 @@ class Tester:
                 if epoch % 10 == 0:
                     print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
                 losses.append(loss.item())
-                # self.log['test/MLP_loss'].log(loss.item())
             return losses
 
         losses = train_model(model, criterion, optimizer, train_loader)
@@ -1832,7 +1836,7 @@ class Tester:
 
         file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
         plt.savefig(file_path)
-        # self.log['test/mlp_training_loss'].upload(file_path)
+        self.wandb_run.log({"mlp/mlp_training_loss": wandb.Image(file_path)})
 
         # Evaluate the model
         def evaluate_model(model, X, y):
@@ -1879,10 +1883,11 @@ class Tester:
         plt.yticks(range(0, 18))
 
         # file_path = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.png')
+        # plt.savefig(file_path)
         file_path_svg = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.svg')
-        plt.savefig(file_path)
         plt.savefig(file_path_svg)
-        # self.log['test/mlp_age_prediction'].upload(file_path)
+        fig = plt.gcf()
+        self.wandb_run.log({"mlp/mlp_age_prediction": wandb.Image(fig)})
 
         # Create a clean plot for the test set
         plt.figure(figsize=(6, 6))
@@ -1907,141 +1912,9 @@ class Tester:
         file_path_clean_svg = os.path.join(self._out_dir, 'mlp_age_prediction_clean.svg')
         # plt.savefig(file_path_clean)
         plt.savefig(file_path_clean_svg)
-
-
-
-    def age_prediction_MLP_OLD(self, train_loader, val_loader):
-
-        """
+        fig = plt.gcf()
+        self.wandb_run.log({"mlp/mlp_age_prediction_clean": wandb.Image(fig)})
         
-        This function trains a MLP model to predict the age of the subjects based on the feature latents. 
-
-        If disentanglement is successful, the model should NOT be able to predict the age of the subjects based on the feature latents.
-
-        Output: plot of training loss and scatter plot of predicted age against ground truth age
-        
-        """
-
-        _, train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
-        _, val_feature_latents, _, val_gt_age, _, _ = self.process_data(val_loader, datasets=None, only_diagonal=True)
-
-        # train_gt_age = mode(train_gt_age, axis=1).mode
-        # val_gt_age = mode(val_gt_age, axis=1).mode
-
-        sc = StandardScaler()
-        train_feature_latents_scaled = sc.fit_transform(train_feature_latents)
-        val_feature_latents_scaled = sc.transform(val_feature_latents)
-
-        train_feature_latents = torch.tensor(train_feature_latents_scaled, dtype=torch.float32)
-        val_feature_latents = torch.tensor(val_feature_latents_scaled, dtype=torch.float32)
-
-        train_gt_age_tensor = torch.tensor(train_gt_age, dtype=torch.float32).view(-1, 1)
-        val_gt_age_tensor = torch.tensor(val_gt_age, dtype=torch.float32).view(-1, 1)
-
-        self.set_seed(42)
-
-        train_dataset = TensorDataset(train_feature_latents, train_gt_age_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-        input_size = train_feature_latents.shape[1]
-
-        # Define the MLP model, loss function, and optimizer
-        model = nn.Sequential(
-            nn.Linear(input_size, 150),
-            nn.ReLU(),
-            nn.Linear(150, 100),
-            nn.ReLU(),
-            nn.Linear(100, 50),
-            nn.ReLU(),
-            nn.Linear(50, 1)) 
-        
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-        # Train the model
-        def train_model(model, criterion, optimizer, dataloader, epochs=100):
-            model.train()
-            losses = []
-            for epoch in range(epochs):
-                for inputs, targets in dataloader:
-                    optimizer.zero_grad()
-                    outputs = model(inputs)
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    optimizer.step()
-                if epoch % 10 == 0:
-                    print(f'Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}')
-                losses.append(loss.item())
-                # self.log['test/MLP_loss'].log(loss.item())
-            return losses
-
-        losses = train_model(model, criterion, optimizer, train_loader)
-
-        # Plot the losses
-        plt.figure()
-        plt.clf()
-        plt.plot(losses)
-        plt.title('MLP Training Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.grid(True)
-
-        file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
-        plt.savefig(file_path)
-        # self.log['test/mlp_training_loss'].upload(file_path)
-
-        # Evaluate the model
-        def evaluate_model(model, X, y):
-            model.eval()
-            with torch.no_grad():
-                predictions = model(X).view(-1)
-                mae = torch.mean(torch.abs(predictions - y.squeeze_(1)))
-            return predictions.numpy(), mae.item()
-
-        train_ages_pred, train_mean_age_diff = evaluate_model(model, train_feature_latents, train_gt_age_tensor)
-        val_ages_pred, val_mean_age_diff = evaluate_model(model, val_feature_latents, val_gt_age_tensor)
-
-        # Plot the results
-        age_range = self._config['data']['dataset_age_range']
-        min_age, max_age = map(int, age_range.split('-'))
-
-        plt.figure(figsize=(5, 5))
-        plt.clf()
-        plt.scatter(train_gt_age, train_ages_pred, color='yellow', marker='x', label='Train dataset')
-        plt.scatter(val_gt_age, val_ages_pred, color='green', label='Validation dataset')
-        plt.plot([0, max_age], [0, max_age], 'r--')
-
-        plt.title('Age prediction on feature latents')
-        plt.xlabel('Ground truth age (years)')
-        plt.ylabel('Predicted age (years)')
-        plt.text(0.25, 0.1, f'Mean absolute difference (train) = {round(train_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
-        plt.text(0.25, 0.05, f'Mean absolute difference (val) = {round(val_mean_age_diff, 2)} years', transform=plt.gca().transAxes)
-        plt.legend(loc='upper left')
-        plt.xticks(range(0, 18))
-        plt.yticks(range(0, 18))
-
-        file_path = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.png')
-
-        plt.savefig(file_path)
-
-        # self.log['test/mlp_age_prediction'].upload(file_path)
-
-    # def dataset_type(self, data_loader, datasets):
-
-    #     data_dataset = []
-
-    #     for batch in tqdm.tqdm(data_loader):
-
-    #         file_name = batch.fname
-
-    #         for fname in file_name:
-    #             # dataset_id = fname.split('.')[0]
-    #             dataset_name = datasets[datasets['id'] == int(fname)]['dataset'].values[0]
-    #             data_dataset.append(dataset_name)
-
-    #     return data_dataset
-
-
 
     def tsne_visualization(self, train_loader, val_loader, test_loader):
         """
@@ -2132,7 +2005,9 @@ class Tester:
 
             file_path = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
             plt.savefig(file_path)
-            # self.log[f'test/tsne_feature_latents_subset_{name}'].upload(file_path)
+            fig = plt.gcf()
+            self.wandb_run.log({f"tsne/tsne_feature_latents_subset_{name}": wandb.Image(fig)})
+
 
             # if name == "all_dataset" or name == "all":
             #     file_path_svg = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
@@ -2151,7 +2026,8 @@ class Tester:
 
                 file_path = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}_dataset.svg')
                 plt.savefig(file_path)
-                # self.log[f'test/tsne_feature_latents_subset_{name}'].upload(file_path)
+                fig = plt.gcf()
+                self.wandb_run.log({f"tsne/tsne_feature_latents_subset_{name}_dataset": wandb.Image(fig)})
 
                 plt.close()
 
@@ -2225,6 +2101,7 @@ class Tester:
         # ------------------------------------------------------------------
 
         sap_score = _compute_sap(identity_latents_train_val.T, age_latents_train_val.T, identity_latents_test.T, age_latents_test.T, continuous_factors=True)
+        sap_score = sap_score['SAP_score']
         print("SAP (age latents info in identity latents):", sap_score)
         # sap_score = list(sap_score.values())[0]
         # self.log['test/sap_score_age_in_id'] = sap_score
@@ -2251,6 +2128,7 @@ class Tester:
             gt_ages_test.T,           
             continuous_factors=True,
         )
+        sap_age_in_id_gt = sap_age_in_id_gt['SAP_score']
         print("SAP (GT age in identity latents):", sap_age_in_id_gt)
 
         r2_age_vs_latent = self.compute_r2(age_latents_train_val, gt_ages_train_val, age_latents_test, gt_ages_test)
@@ -2352,7 +2230,28 @@ class Tester:
             print("Feature-level R² results (z_age in z_id):", feature_r2_results_age_in_id)
             print("Feature-level R² results (z_id in z_age):", feature_r2_results_id_in_age)
             # self.log["test/feature_r2_age_in_id"] = feature_r2_results_age_in_id
-            # self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age                
+            # self.log["test/feature_r2_id_in_age"] = feature_r2_results_id_in_age  
+
+        # ----- NEW: log everything to wandb as a table -----
+        table = wandb.Table(columns=["metric", "value"])
+
+        table.add_data("sap_age_in_id_latents", float(sap_score))
+        table.add_data("r2_id_given_age", float(r2_id_given_age))
+        table.add_data("sap_age_in_id_gt", float(sap_age_in_id_gt))
+        table.add_data("r2_age_vs_latent", float(r2_age_vs_latent))
+        table.add_data("sap_hipp_age_in_all_latents", float(sap_score_hipp))
+        table.add_data("leakage_age_into_id_latents", float(leakage_age_into_others))
+
+        if self._config['model']['age_per_feature']:
+            for feat, v in feature_r2_results_gt_age_in_id.items():
+                table.add_data(f"feature_r2_gt_age_in_id_{feat}", float(v))
+            for feat, v in feature_r2_results_age_in_id.items():
+                table.add_data(f"feature_r2_age_in_id_{feat}", float(v))
+            for feat, v in feature_r2_results_id_in_age.items():
+                table.add_data(f"feature_r2_id_in_age_{feat}", float(v))
+
+        # # Log the table
+        self.wandb_run.log({"dis_stats/disentanglement_stats": table})
     
         output_file = os.path.join(self._out_dir, 'dis_stats.txt')
         with open(output_file, 'w') as f:
@@ -2511,6 +2410,8 @@ class Tester:
             plt.yticks(fontsize=22)
             file_path = os.path.join(output_directory, f'proportions_{proportion_name}_{label_a}_vs_{label_b}.svg')
             plt.savefig(file_path, bbox_inches='tight')
+            fig = plt.gcf()
+            self.wandb_run.log({f"proportions/proportions_{proportion_name}_{label_a}_vs_{label_b}": wandb.Image(fig)})
             plt.close()
             # self.log[f'test/proportions_{proportion_name}_{label_a}_vs_{label_b}'].upload(file_path)
 
@@ -3047,8 +2948,48 @@ if __name__ == '__main__':
     configurations = utils.get_config(
         os.path.join(output_directory, "config.yaml"))
 
-    # logging = utils.get_config("logging.yaml")
-    logging = None
+    ##### INITALISE LOGGING #####
+
+    # logging_config = utils.get_config("logging.yaml")
+
+    # Set these BEFORE wandb.init()
+    os.environ["WANDB_DIR"] = configurations['wandb']['dir']
+    os.environ["WANDB_DISABLE_CODE"] = "true"
+    os.environ["WANDB_DISABLE_GIT"] = "true"
+    os.environ["WANDB_CONSOLE"] = "off"
+
+    entity = configurations['wandb']['entity']
+    project = configurations['wandb']['project']
+    id = f"id_{model_name}"
+
+    wandb_run = wandb.init(
+        entity=entity,
+        project=project,
+        name=model_name,
+        id=id, # needs to be unique even if old version is deleted
+        dir=os.environ["WANDB_DIR"],
+        save_code=False,
+        resume="allow",
+        settings=wandb.Settings(_disable_stats=True),
+        config=configurations
+    )
+
+    # assert logging_config is not None
+    assert opts.id is not None
+    assert wandb_run is not None
+
+    ### DELETE OLD LOGS ###
+
+    # api = wandb.Api()
+    # run = api.run(f"{entity}/{project}/{id}")
+
+    # for f in run.files():
+    #     print(f.name)
+    #     if f.name.startswith("media/"): # and f.name.lower().endswith((".png", ".mp4")):
+    #         print("Deleting:", f.name)
+    #         f.delete()
+
+    #############################
 
     if not torch.cuda.is_available():
         device = torch.device('cpu')
@@ -3068,7 +3009,7 @@ if __name__ == '__main__':
         get_data_loaders(configurations, manager.template)
 
     tester = Tester(manager, normalization_dict, train_loader, val_loader, test_loader,
-                    output_directory, configurations, logging)
+                    output_directory, configurations, wandb_run) #, logging_config)
 
     tester()
     # tester.direct_manipulation()
