@@ -9,6 +9,9 @@ import torch_geometric.transforms
 
 import networkx as nx
 import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 from collections import Counter
 from torch_geometric.data import Data
 from torch_geometric.utils import get_laplacian
@@ -438,3 +441,16 @@ def _sap_classification(factors, codes, nb_factors, nb_codes):
 # ------------------------------------------------------
 ### END: SAP score function from HIPPOCAMPUS PAPER ###
 # ------------------------------------------------------
+
+
+def plot_confusion_matrix(data, labels, output_filename):
+    sns.set(color_codes=True)
+    ax = sns.heatmap(data, annot=True, cmap="YlGnBu", vmin=0., vmax=1.)
+
+    ax.set_xticklabels(labels)
+    ax.set_yticklabels(labels)
+
+    ax.set(ylabel="True Label", xlabel="Predicted Label")
+
+    plt.savefig(output_filename, bbox_inches='tight', dpi=300)
+    plt.close()

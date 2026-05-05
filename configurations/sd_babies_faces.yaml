@@ -5,6 +5,7 @@ data:
   # dataset_type: faces_babies_faces
   # dataset_path: /raid/compass/athena/data/DATA_BABIES_FACES
   # dataset_metadata_path: preprocessing_data/BABIES_faces_metadata.csv
+
       ###### UNIFIED DATASET #######
   # template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
   # precomputed_path: precomputed
@@ -12,22 +13,33 @@ data:
   # # dataset_path: /raid/compass/athena/data/unified_normals_dataset
   # dataset_path: /raid/compass/athena/data/smooth_unified_normals_dataset 
   # dataset_metadata_path: preprocessing_data/combined_datasets_ages.csv 
+
         ###### FRIDAY UNIFIED DATASET #######
-  template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
-  precomputed_path: precomputed
-  dataset_type: faces_friday_unified
-  dataset_path: /raid/compass/athena/data/friday_unified_meshes_subset_0_17
-  # dataset_path: /raid/compass/athena/data/friday/friday_unified_meshes
-  dataset_metadata_path: preprocessing_data/friday_all_datasets.csv 
-      ###### SYNDROMIC/NON-SYNDROMIC DATASET #######
-  # template_path: preprocessing_data/faces_colour_template.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
+  # template_path: preprocessing_data/face_combined_9_features.ply    # vertices should be coloured (vertex semantic segmentation)
   # precomputed_path: precomputed
-  # dataset_type: faces_babies_faces_syn_nonsyn
-  # dataset_path: /raid/compass/athena/data/face_meshes_syn_nonsyn
+  # dataset_type: faces_friday_unified
+  # dataset_path: /raid/compass/athena/data/friday_unified_meshes_subset_0_17
+  # # dataset_path: /raid/compass/athena/data/friday/friday_unified_meshes
+  # dataset_metadata_path: preprocessing_data/friday_all_datasets.csv 
+
+      ###### SYNDROMIC/NON-SYNDROMIC DATASET #######
+  # template_path: preprocessing_data/syn_template_9_features.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
+  # precomputed_path: precomputed
+  # dataset_type: faces_syn_nonsyn
+  # dataset_path: /raid/compass/athena/data/syn_nonsyn_meshes
   # # dataset_type: faces_babies_faces_syn
   # # dataset_path: /raid/compass/athena/data/face_meshes_syn
   # dataset_metadata_path: preprocessing_data/face_meshes_syn_nonsyn_metadata.csv
       ######
+
+      ###### SYNDROMIC/NON-SYNDROMIC DATASET #######
+  template_path: preprocessing_data/head_template.ply  #face_7_features.ply #faces_colour_template.ply         # vertices should be coloured (vertex semantic segmentation)
+  precomputed_path: precomputed
+  dataset_type: head_syn_nonsyn
+  dataset_path: /raid/compass/athena/data/head_face_meshes
+  dataset_metadata_path: preprocessing_data/heads_full_dataset_summary.csv
+      ######
+
   dataset_remove: []                                                        # remove specific meshes from the dataset
   dataset_age_range: 0-17                                                      # age range that data set is restricted to seperated by a '-'
   normalize_data: True
@@ -73,7 +85,7 @@ optimization:
   age_weight: 8 #1    
   age_weight_seperation: ['0:4', '1:3', '2:3', '3:2', '4:2', '15:2', '16:2','17:2']                          # age weight changes for specific years for training the encoder to put more pressure on specific ages
 
-  age_remove_mlp_weight: 0 #0.05                                                         # if 0, no age remove loss is used (removing age from id latents)
+  age_remove_mlp_weight: 0.05                                                         # if 0, no age remove loss is used (removing age from id latents)
   age_remove_mlp_grl_weight: 0.3 #0.5                                                   # if 0, no age prediction loss is used (predicting age from age latents)
   
   age_recon_weight: 0 #0.05      
@@ -89,7 +101,7 @@ optimization:
   adversarial_weight: 0 #  
   adversarial_lr: 1e-4    
 
-  adversarial_latent_weight: 0 #0.05
+  adversarial_latent_weight: 0.05
   adversarial_latent_grl_weight: 0.3 #0.5                                               # if using GRL for adversarial latent loss
   adversarial_latent_lr: 1.25e-4
 
@@ -97,7 +109,8 @@ optimization:
 
   reencode_id_consistency_weight: 0 #0.1
   reencode_age_consistency_weight: 0 #0.05  
-  cycle_consistency_weight: 0.1          
+  
+  cycle_consistency_weight: 0 #0.1          
 
   disease_classification_weight: 0 #1                                               # if 0, no disease classification loss is used
 
@@ -110,22 +123,22 @@ model:
     dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
-  latent_size: 45                                                               # size of the latent vector
+  latent_size: 75 #45                                                               # size of the latent vector
   age_per_feature: True                                                        # if True, a single age latent is added per feature. 
-  age_latent_size: 9                                                         # size of additional age latents
+  age_latent_size: 15 #9                                                         # size of additional age latents
   pre_z_sigmoid: False
 
   age_disentanglement: True   
   age_seperation: False #True                                                  # if True, an extra feature is added to the latent vector that represents age & age related losses are added
-  age_remove_loss_mlp: False #True
+  age_remove_loss_mlp: True
   age_reconstruction_mlp: False #True
   contrastive_loss: False #True                                                        # if True, contrastive loss is used
   mi_loss: False #True
   adversarial_loss: False #True                                                        # if True, adversarial loss is used
-  adversarial_loss_latent: False #True
+  adversarial_loss_latent: True
   conditional_vae: False #True
   reencode_latent: False #True
-  cycle_consistency: True
+  cycle_consistency: False #True
   disease_classification: False #True
 
   discriminator_type: "Spiral" # "Spiral" "MLP"

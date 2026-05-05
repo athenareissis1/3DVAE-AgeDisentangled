@@ -15,6 +15,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
 
 import torch.nn as nn
 import torch.optim as optim
@@ -34,7 +35,12 @@ from sklearn.manifold import TSNE
 # from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import mean_squared_error, r2_score #, mutual_info_score, accuracy_score, confusion_matrix
 # from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.linear_model import LinearRegression #, LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.svm import SVC
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.utils.multiclass import unique_labels
 
 # from disentanglement_lib.evaluation.metrics import mig, dci, sap_score, beta_vae
 
@@ -66,10 +72,14 @@ class Tester:
         self._val_loader = val_load
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
+        # self._data_type = config['data']['dataset_type'].split("_", 1)[1]
+        self._data_type = config['data']['dataset_type']
         self.latent_stats = self.compute_latent_stats(train_load)
-        self._data_type = config['data']['dataset_type'].split("_", 1)[1]
         self._region_codes = list(model_manager.template.feat_and_cont.keys())
-        self._region_names = ["Eyes", "Temporal", "Forehead", "Cheekbones", "Jaw", "Nose", "Cheeks", "Lips", "Chin"]
+        if self._data_type == 'faces_friday_unified':
+            self._region_names = ["Eyes", "Temporal", "Forehead", "Cheekbones", "Jaw", "Nose", "Cheeks", "Lips", "Chin"]
+        elif self._data_type == 'head_syn_nonsyn':
+            self._region_names = ["Upper Lip", "Chin", "Nasolabial", "Nose", "Cheeks", "Zygomatic", "Orbits", "Mandible", "Supraorbital", "Neck", "Ears", "Frontal", "Occipital", "Temporal", "Parietal"]
         self._palette = {k: self.string_to_color(k) for k in model_manager.template.feat_and_cont.keys()}
 
         self.coma_landmarks = [
@@ -109,30 +119,43 @@ class Tester:
         # outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
         # with open(outfile_path, 'w') as outfile:
         #     json.dump(metrics, outfile)
-
+ 
         # TEST TO RUN (run all on val set then once model is finalised move to test set)
-        self.per_variable_range_experiments(use_z_stats=False)
-        self.random_generation_and_rendering(n_samples=16, age=None)
+        # if 'syn' in self._data_type:
+        #     dataset_list = ["all", "healthy", "apert", "muenke", "crouzon"]
+        # else:
+        #     dataset_list = ["all"]
 
-        if self._config['model']['age_disentanglement']:
-            static_ages = [0, 4, 8, 12, 17]
-            for age in static_ages:
-                self.random_generation_and_rendering(n_samples=16, age=age)
+        # for dataset in dataset_list:
+        #     self.per_variable_range_experiments(dataset, use_z_stats=False)
+
+        # for dataset in dataset_list:
+        #     self.random_generation_and_rendering(dataset, n_samples=16, age=None)
+        #     if self._config['model']['age_disentanglement']:
+        #         static_ages = [0, 4, 8, 12, 17]
+        #         for age in static_ages:
+        #             self.random_generation_and_rendering(dataset, n_samples=16, age=age)
 
         if self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']:
             eval_loader = self._test_loader # self._val_loader,
-            self.dataset_split()
-            self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
-            self.age_prediction_MLP(self._train_loader, eval_loader)
-            self.age_latent_changing(eval_loader)
-            self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
-            self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
-            self.proportions(eval_loader)
-            self.plot_proportions()
+            # self.dataset_split()
+            # self.age_encoder_decoder_accuracy(self._train_loader, eval_loader)
+            # self.age_prediction_MLP(self._train_loader, eval_loader)
+            self.age_latent_changing(eval_loader, per_dataset=True)
+            # self.tsne_visualization(self._train_loader, self._val_loader, self._test_loader)
+            # self.stats_tests_correlation(self._train_loader, self._val_loader, self._test_loader)
+
+            # # proportions tests
+            # self.proportions(eval_loader)
+            # self.plot_proportions()
 
             # # relatives tests
             # self.relatives_aging_diff_new()
             # self.relatives_aging()
+
+            # if 'syn' in self._data_type:
+                # self.syndrome_predictability_from_subspaces()
+                # self.growth_trajectory_interpolate_towards_healthy_mean(eval_loader)
         
         # self._manager.log_hyperparameters(self.log, self._config, self._logging_config)
         
@@ -159,17 +182,78 @@ class Tester:
             with open(storage_path, 'rb') as file:
                 z_stats = pickle.load(file)
         except FileNotFoundError:
+            metadata_path = self._config['data']['dataset_metadata_path']
+            metadata = pd.read_csv(metadata_path)
+
             latents_list = []
+            diagonal_latents_list = []
+            dataset_list = []
+
             for data in tqdm.tqdm(data_loader):
-                latents_list.append(self._manager.encode(
-                    data.x.to(self._device)).detach().cpu())
+                fname = data['fname']
+                z_batch = self._manager.encode(data.x.to(self._device)).detach().cpu()
+                latents_list.append(z_batch)
+                diagonal_latents_list.append(z_batch[self._manager.batch_diagonal_idx, ::])
+
+                for entry_id in fname:
+                    if 'combined' in self._data_type:
+                        entry_id = int(entry_id) 
+                    # dataset_list.append(metadata.loc[metadata['id'] == entry_id, 'Dataset'])
+                    ds_series = metadata.loc[metadata['id'] == entry_id, 'Dataset']
+                    # ds = ds_series.values[0] #if not ds_series.empty else "UNKNOWN"
+                    dataset_list.append(str(ds_series.values[0]).strip())
+
+            dataset_arr = np.array(dataset_list)
             latents = torch.cat(latents_list, dim=0)
+            diagonal_latents = torch.cat(diagonal_latents_list, dim=0)
             z_means = torch.mean(latents, dim=0)
             z_stds = torch.std(latents, dim=0)
             z_mins, _ = torch.min(latents, dim=0)
             z_maxs, _ = torch.max(latents, dim=0)
-            z_stats = {'means': z_means, 'stds': z_stds,
-                       'mins': z_mins, 'maxs': z_maxs}
+
+            def select_diag_for_dataset(name):
+                mask = (dataset_arr == name)
+                return diagonal_latents[torch.from_numpy(mask)]
+
+            if 'syn' in self._data_type:
+                # calculate stats per syndrome in total and maybe per age integer
+                # dataset_arr = np.array(dataset_list)
+
+                z_LYHM = select_diag_for_dataset("LYHM")
+                z_Paeds = select_diag_for_dataset("Paeds")
+                z_healthy = torch.cat([z_LYHM, z_Paeds], dim=0)
+                z_apert = select_diag_for_dataset("Apert")
+                z_muenke = select_diag_for_dataset("Muenke")
+                z_crouzon = select_diag_for_dataset("Crouzon")
+
+                z_healthy_means = torch.mean(z_healthy, dim=0)
+                z_healthy_stds = torch.std(z_healthy, dim=0)
+                z_healthy_mins, _ = torch.min(z_healthy, dim=0)
+                z_healthy_maxs, _ = torch.max(z_healthy, dim=0)
+
+                z_apert_means = torch.mean(z_apert, dim=0)
+                z_apert_stds = torch.std(z_apert, dim=0)
+                z_apert_mins, _ = torch.min(z_apert, dim=0)
+                z_apert_maxs, _ = torch.max(z_apert, dim=0)
+
+                z_muenke_means = torch.mean(z_muenke, dim=0)
+                z_muenke_stds = torch.std(z_muenke, dim=0)
+                z_muenke_mins, _ = torch.min(z_muenke, dim=0)
+                z_muenke_maxs, _ = torch.max(z_muenke, dim=0)
+
+                z_crouzon_means = torch.mean(z_crouzon, dim=0)
+                z_crouzon_stds = torch.std(z_crouzon, dim=0)
+                z_crouzon_mins, _ = torch.min(z_crouzon, dim=0)
+                z_crouzon_maxs, _ = torch.max(z_crouzon, dim=0)
+
+                z_stats = {'all_means': z_means, 'all_stds': z_stds, 'all_mins': z_mins, 'all_maxs': z_maxs, 
+                            'healthy_means': z_healthy_means, 'healthy_stds': z_healthy_stds, 'healthy_mins': z_healthy_mins, 'healthy_maxs': z_healthy_maxs, 
+                            'apert_means': z_apert_means, 'apert_stds': z_apert_stds, 'apert_mins': z_apert_mins, 'apert_maxs': z_apert_maxs,
+                            'muenke_means': z_muenke_means, 'muenke_stds': z_muenke_stds, 'muenke_mins': z_muenke_mins, 'muenke_maxs': z_muenke_maxs,
+                            'crouzon_means': z_crouzon_means, 'crouzon_stds': z_crouzon_stds, 'crouzon_mins': z_crouzon_mins, 'crouzon_maxs': z_crouzon_maxs}
+            else:
+                z_stats = {'all_means': z_means, 'all_stds': z_stds,
+                        'all_mins': z_mins, 'all_maxs': z_maxs}
 
             with open(storage_path, 'wb') as file:
                 pickle.dump(z_stats, file)
@@ -184,36 +268,39 @@ class Tester:
             colors = [0., 0., 0.]
         return tuple(colors)
 
-    def per_variable_range_experiments(self, z_range_multiplier=1,
+    def per_variable_range_experiments(self, dataset, z_range_multiplier=1,
                                        use_z_stats=True):
+
+        out_dir = os.path.join(self._out_dir, "latent_exploration")
+        os.makedirs(out_dir, exist_ok=True)
         
-        # gives 54
+        # gives total latent size
         latent_size = self._manager.model_latent_size
-        # gives 9
+        # gives age latent size
         age_latent_size = self._manager._age_latent_size
-        # gives 45
+        # gives identity latent size
         feature_latent_size = latent_size - age_latent_size
-        # gives 5
+        # gives how many latents per feature for id 
         if self._config['data']['swap_features']:
             individual_feature_latent_size = feature_latent_size // len(self._manager.latent_regions)
         else:
             individual_feature_latent_size = 5 ## make dynamic 
-
-        if self._is_vae and not use_z_stats and not (self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']):
+            
+        if self._is_vae and not use_z_stats and not (self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']) and dataset == "all":
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
             z_maxs = 3 * z_range_multiplier * torch.ones(latent_size)
-        elif self._is_vae and not use_z_stats and (self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']):
+        elif self._is_vae and not use_z_stats and (self._config['model']['age_disentanglement'] or self._config['model']['age_per_feature']) and dataset == "all":
             latent_size = self._manager.model_latent_size   
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
             z_maxs = 3 * z_range_multiplier * torch.ones(latent_size)
-            z_mins[-age_latent_size:] = self.latent_stats['mins'][-age_latent_size:] * z_range_multiplier
-            z_maxs[-age_latent_size:] = self.latent_stats['maxs'][-age_latent_size:] * z_range_multiplier
+            z_mins[-age_latent_size:] = self.latent_stats[f'{dataset}_mins'][-age_latent_size:] * z_range_multiplier
+            z_maxs[-age_latent_size:] = self.latent_stats[f'{dataset}_maxs'][-age_latent_size:] * z_range_multiplier
         else:
-            z_means = self.latent_stats['means']
-            z_mins = self.latent_stats['mins'] * z_range_multiplier
-            z_maxs = self.latent_stats['maxs'] * z_range_multiplier
+            z_means = self.latent_stats[f'{dataset}_means']
+            z_mins = self.latent_stats[f'{dataset}_mins'] * z_range_multiplier
+            z_maxs = self.latent_stats[f'{dataset}_maxs'] * z_range_multiplier
 
         # Create video perturbing each latent variable from min to max.
         # Show generated mesh and error map next to each other
@@ -249,10 +336,10 @@ class Tester:
             frames = torch.cat([renderings, differences_renderings], dim=-1)
             all_frames_age = torch.cat([frames, torch.zeros_like(frames)[:2, ::]])
                 
-            file_name = 'latent_exploration_all_age_latents_[min-max].mp4'
-            file_path = os.path.join(self._out_dir, file_name)
+            file_name = f'latent_exploration_data_{dataset}_all_age_latents_[min-max].mp4'
+            file_path = os.path.join(out_dir, file_name)
             write_video(file_path, all_frames_age.permute(0, 2, 3, 1) * 255, fps=4)
-            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[min-max]_vid": wandb.Video(file_path, format="mp4")})
+            self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_all_age_latents_[min-max]_vid": wandb.Video(file_path, format="mp4")})
 
         # changing all age latent values [0-17]
 
@@ -281,18 +368,18 @@ class Tester:
 
             frames = torch.cat([renderings, differences_renderings], dim=-1)
 
-            file_name = 'latent_exploration_all_age_latents_[0-17].mp4'
-            file_path = os.path.join(self._out_dir, file_name)
+            file_name = f'latent_exploration_data_{dataset}_all_age_latents_[0-17].mp4'
+            file_path = os.path.join(out_dir, file_name)
             write_video(file_path, frames.permute(0, 2, 3, 1) * 255, fps=4)
-            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[0-17]_vid": wandb.Video(file_path, format="mp4")})
+            self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_all_age_latents_[0-17]_vid": wandb.Video(file_path, format="mp4")})
 
             # Create a .png with all meshes in one row and difference maps in the second row
             combined_frames = torch.cat([renderings, differences_renderings], dim=0)
             grid = make_grid(combined_frames, nrow=len(age_range), padding=10, pad_value=1)
-            file_name = 'latent_exploration_all_age_latents_[0-17].png'
-            file_path = os.path.join(self._out_dir, file_name)
+            file_name = f'latent_exploration_data_{dataset}_all_age_latents_[0-17].png'
+            file_path = os.path.join(out_dir, file_name)
             save_image(grid, file_path)
-            self.wandb_run.log({"latent_exploration/latent_exploration_all_age_latents_[0-17]_fig": wandb.Image(file_path)})
+            self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_all_age_latents_[0-17]_fig": wandb.Image(file_path)})
 
         #### NOT AGE TESTS ####
         n_steps = 10
@@ -322,10 +409,10 @@ class Tester:
             all_frames.append(
                 torch.cat([frames, torch.zeros_like(frames)[:2, ::]]))
 
-        file_name = 'latent_exploration.mp4'
-        file_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}.mp4'
+        file_path = os.path.join(out_dir, file_name)
         write_video(file_path, torch.cat(all_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        self.wandb_run.log({"latent_exploration/latent_exploration_vid": wandb.Video(file_path, format="mp4")})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_vid": wandb.Video(file_path, format="mp4")})
 
         # Same video as before, but effects of perturbing each latent variables
         # are shown in the same frame. Only error maps are shown.
@@ -355,15 +442,15 @@ class Tester:
                 make_grid(stacked_frames[:, i, ::], padding=10,
                           pad_value=1, nrow=grid_nrows))
             
-        file_name = 'latent_exploration_tiled.png'
-        file_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}_tiled.png'
+        file_path = os.path.join(out_dir, file_name)
         save_image(grid_frames[-1], file_path)
-        self.wandb_run.log({"latent_exploration/latent_exploration_tiled_fig": wandb.Image(file_path)})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_tiled_fig": wandb.Image(file_path)})
 
-        file_name = 'latent_exploration_tiled.mp4'
-        file_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}_tiled.mp4'
+        file_path = os.path.join(out_dir, file_name)
         write_video(file_path, torch.stack(grid_frames, dim=0).permute(0, 2, 3, 1) * 255, fps=1)
-        self.wandb_run.log({"latent_exploration/latent_exploration_tiled_vid": wandb.Video(file_path, format="mp4")})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_tiled_vid": wandb.Video(file_path, format="mp4")})
 
         # Same as before, but only output meshes are used
         stacked_frames_meshes = torch.stack(all_renderings)
@@ -373,10 +460,10 @@ class Tester:
                 make_grid(stacked_frames_meshes[:, i, ::], padding=10,
                           pad_value=1, nrow=grid_nrows))
             
-        file_name = 'latent_exploration_outs_tiled.mp4'
-        file_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}_outs_tiled.mp4'
+        file_path = os.path.join(out_dir, file_name)
         write_video(file_path, torch.stack(grid_frames_m, dim=0).permute(0, 2, 3, 1) * 255, fps=4)
-        self.wandb_run.log({"latent_exploration/latent_exploration_outs_tiled_vid": wandb.Video(file_path, format="mp4")})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_outs_tiled_vid": wandb.Video(file_path, format="mp4")})
 
 
         # Create a plot showing the effects of perturbing latent variables in
@@ -397,27 +484,27 @@ class Tester:
                              col_wrap=4, height=3)
 
         grid.map(plt.plot, "z_var", "mean_dist", marker="o")
-        file_name = 'latent_exploration_split.svg'
-        svg_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}_split.svg'
+        svg_path = os.path.join(out_dir, file_name)
         plt.savefig(svg_path)
         fig = plt.gcf()
-        self.wandb_run.log({"latent_exploration/latent_exploration_split_svg": wandb.Image(fig)})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_split_svg": wandb.Image(fig)})
 
         sns.relplot(data=df, kind="line", x="z_var", y="mean_dist",
                     hue="region", palette=self._palette)
-        file_name = 'latent_exploration.svg'
-        svg_path = os.path.join(self._out_dir, file_name)
+        file_name = f'latent_exploration_data_{dataset}_.svg'
+        svg_path = os.path.join(out_dir, file_name)
         plt.savefig(svg_path)
         fig = plt.gcf()  # current figure
-        self.wandb_run.log({"latent_exploration/latent_exploration_svg": wandb.Image(fig)})
+        self.wandb_run.log({f"latent_exploration/latent_exploration_data_{dataset}_svg": wandb.Image(fig)})
 
-    def random_latent(self, n_samples, z_range_multiplier=1, age=None):
-        if self._is_vae:  # sample from normal distribution if vae
+    def random_latent(self, dataset, n_samples, z_range_multiplier=1, age=None):
+        if self._is_vae and dataset == 'all':  # sample from normal distribution if vae
             z = torch.randn([n_samples, self._manager.model_latent_size])
         else:
-            z_means = self.latent_stats['means']
-            z_mins = self.latent_stats['mins'] * z_range_multiplier
-            z_maxs = self.latent_stats['maxs'] * z_range_multiplier
+            z_means = self.latent_stats[f'{dataset}_means']
+            z_mins = self.latent_stats[f'{dataset}_mins'] * z_range_multiplier
+            z_maxs = self.latent_stats[f'{dataset}_maxs'] * z_range_multiplier
 
             uniform = torch.rand([n_samples, z_means.shape[0]],
                                  device=z_means.device)
@@ -433,25 +520,28 @@ class Tester:
 
         return z
 
-    def random_generation(self, n_samples=16, z_range_multiplier=1, age=None, denormalize=True):
-        z = self.random_latent(n_samples, z_range_multiplier, age=age)
+    def random_generation(self, dataset, n_samples=16, z_range_multiplier=1, age=None, denormalize=True):
+        z = self.random_latent(dataset, n_samples, z_range_multiplier, age=age)
         gen_verts = self._manager.generate(z.to(self._device))
         if self._normalized_data and denormalize:
             gen_verts = self._unnormalize_verts(gen_verts)
         return gen_verts
 
-    def random_generation_and_rendering(self, n_samples=16, z_range_multiplier=1, age=None):
-        gen_verts = self.random_generation(n_samples, z_range_multiplier, age=age)
+    def random_generation_and_rendering(self, dataset, n_samples=16, z_range_multiplier=1, age=None):
+        out_dir = os.path.join(self._out_dir, "random_generation")
+        os.makedirs(out_dir, exist_ok=True)
+    
+        gen_verts = self.random_generation(dataset, n_samples, z_range_multiplier, age=age)
         renderings = self._manager.render(gen_verts).cpu()
         grid = make_grid(renderings, padding=10, pad_value=1)
         if age is None:
-            file_path = os.path.join(self._out_dir, 'random_generation.png')
+            file_path = os.path.join(out_dir, f'random_generation_{dataset}.png')
             save_image(grid, file_path)
-            self.wandb_run.log({"random/random_generation": wandb.Image(file_path)})
+            self.wandb_run.log({f"random/random_generation_{dataset}": wandb.Image(file_path)})
         else:
-            file_path = os.path.join(self._out_dir, f'random_generation_age_{age}.png')
+            file_path = os.path.join(out_dir, f'random_generation_{dataset}_age_{age}.png')
             save_image(grid, file_path)
-            self.wandb_run.log({f"random/random_generation_age_{age}": wandb.Image(file_path)})
+            self.wandb_run.log({f"random/random_generation_{dataset}_age_{age}": wandb.Image(file_path)})
 
     def random_generation_and_save(self, n_samples=16, z_range_multiplier=1):
         out_mesh_dir = os.path.join(self._out_dir, 'random_meshes')
@@ -1030,8 +1120,129 @@ class Tester:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+    def one_datapoint_per_dataset_HARDCODE(self, eval_loader):
+        # wanted = ["a9", "m143", "c93", "b17"] #all 0-1 years
 
-    def age_latent_changing(self, eval_loader):
+        wanted = ["a99", "m143", "c97", "n977"]
+
+        found = {}
+
+        for bi, batch in enumerate(eval_loader):
+            batch_fnames = list(batch.fname)
+            print(batch_fnames)
+            batch_age = batch.age
+
+            # take diagonal if swap_features
+            x = batch.x[self._manager.batch_diagonal_idx, ::]
+
+            for i, fname in enumerate(batch_fnames):
+                fname_str = str(fname)
+                if fname_str in wanted and fname_str not in found:
+                    found[fname_str] = (x[i].detach().cpu(), fname_str, float(batch_age[i].item()))
+
+            # stop early if we found all
+            if len(found) == len(wanted):
+                break
+
+        # Ensure we found everything
+        missing = [w for w in wanted if w not in found]
+        if missing:
+            raise RuntimeError(f"Could not find wanted ids: {missing}. Found: {list(found.keys())}")
+
+        # Emit in wanted order
+        x_list = [found[w][0] for w in wanted]
+        original_fname = [found[w][1] for w in wanted]
+        original_ages = np.array([found[w][2] for w in wanted], dtype=np.float32)
+
+        batch = torch.stack(x_list, dim=0)
+        return batch, original_ages, original_fname
+
+
+    def one_datapoint_per_dataset(self, eval_loader):
+
+        wanted = ["a", "c", "m", "healthy"]  # keep as groups, not raw letters
+        healthy_letters = {"b", "n"}
+
+        x_list = []
+        original_fname = []
+        original_ages = []
+
+        for bi, batch in enumerate(eval_loader):
+            batch_fnames = list(batch.fname)
+            print(batch_fnames)
+            # If batch.fname is a tensor for your dataset, uncomment:
+            # if isinstance(batch.fname, torch.Tensor):
+            #     batch_fnames = batch.fname.detach().cpu().tolist()
+
+            # we'll try to fill missing groups from this batch
+            # still_wanted = set(wanted) - set(
+            #     ["a" if "a" not in wanted else None]  # dummy; replaced below
+            # )
+            # simpler: just track with a dict
+            have = {"a": False, "c": False, "m": False, "healthy": False}
+            # but we might already have some from previous batches
+            # derive from what we already picked:
+            for f in original_fname:
+                p = str(f)[0].lower()
+                if p == "a":
+                    have["a"] = True
+                elif p == "c":
+                    have["c"] = True
+                elif p == "m":
+                    have["m"] = True
+                elif p in healthy_letters:
+                    have["healthy"] = True
+
+            for i, f in enumerate(batch_fnames):
+                p = str(f)[0].lower()
+
+                # match groups we still need
+                if (p == "a") and (not have["a"]):
+                    x_list.append(batch.x[i])
+                    original_fname.append(f)
+                    original_ages.append(float(batch.age[i].item()))
+                    have["a"] = True
+
+                elif (p == "c") and (not have["c"]):
+                    x_list.append(batch.x[i])
+                    original_fname.append(f)
+                    original_ages.append(float(batch.age[i].item()))
+                    have["c"] = True
+
+                elif (p == "m") and (not have["m"]):
+                    x_list.append(batch.x[i])
+                    original_fname.append(f)
+                    original_ages.append(float(batch.age[i].item()))
+                    have["m"] = True
+
+                elif (p in healthy_letters) and (not have["healthy"]):
+                    x_list.append(batch.x[i])
+                    original_fname.append(f)
+                    original_ages.append(float(batch.age[i].item()))
+                    have["healthy"] = True
+
+                # stop early if we have all 4
+                if all(have.values()):
+                    break
+
+            if all(have.values()):
+                break
+
+        if not x_list or len(x_list) < 4:
+            raise RuntimeError(
+                f"Could not assemble per-dataset batch. Picked {len(x_list)} samples. "
+                f"Picked fnames={original_fname}"
+            )
+
+        # Build the selected batch tensor (shape: 4 x V x 3)
+        batch = torch.stack(x_list, dim=0)
+        original_ages = np.array(original_ages)
+        # original_fname already a list
+
+        return batch, original_ages, original_fname
+
+
+    def age_latent_changing(self, eval_loader, per_dataset=False):
 
         """
         
@@ -1045,6 +1256,9 @@ class Tester:
 
         """
 
+        out_dir = os.path.join(self._out_dir, "age_latent_changing")
+        os.makedirs(out_dir, exist_ok=True)
+
         padding_value = 10
 
         storage_path = os.path.join(self._manager._precomputed_storage_path, f'normalise_age_{self._data_type}.pkl')
@@ -1056,16 +1270,20 @@ class Tester:
         for i in range(len(age_latent_ranges)):
             age_latent_ranges[i] = (age_latent_ranges[i] - age_train_mean) / age_train_std
 
-        batch = next(iter(eval_loader))
-
-        original_ages = batch.age.numpy()
-
-        if self._config['data']['swap_features']:
-            batch = batch.x[self._manager.batch_diagonal_idx, ::] 
-        elif self._config['optimization']['batch_size'] == 16:
-            batch = batch.x[:4, ::]
+        if per_dataset:
+            # batch, original_ages, original_fname = self.one_datapoint_per_dataset(eval_loader)
+            batch, original_ages, original_fname = self.one_datapoint_per_dataset_HARDCODE(eval_loader)
         else:
-            batch = batch.x
+            batch = next(iter(eval_loader))
+            original_ages = batch.age.numpy()
+            original_fname = batch.fname
+
+            if self._config['data']['swap_features']:
+                batch = batch.x[self._manager.batch_diagonal_idx, ::] 
+            elif self._config['optimization']['batch_size'] == 16:
+                batch = batch.x[:4, ::]
+            else:
+                batch = batch.x
 
         z = self._manager.encode(batch.to(self._device)).detach()
 
@@ -1148,10 +1366,16 @@ class Tester:
             # create image
 
             stacked_frames = torch.stack(output)
-            file_path = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}.png')
+            if per_dataset:
+                file_path = os.path.join(out_dir, f'age_latent_changing_per_dataset_{age_latent_ranges_original}_{name}.png')
+            else:
+                file_path = os.path.join(out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}.png')
             grid = make_grid(stacked_frames, padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1) 
             save_image(grid, file_path)
-            self.wandb_run.log({f"age_changing/age_latent_changing_{name}": wandb.Image(file_path)})
+            if per_dataset:
+                self.wandb_run.log({f"age_changing/age_latent_changing_per_dataset_{name}": wandb.Image(file_path)})
+            else:
+                self.wandb_run.log({f"age_changing/age_latent_changing_{name}": wandb.Image(file_path)})
 
         # make per subject image for chaning each age latent and all age latents
         def make_subject_image(subject_frames, age_latent_ranges_original, name):
@@ -1161,13 +1385,13 @@ class Tester:
             second_half = subject_frames[half:]
 
             # Save the first half
-            file_path_1 = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part1.png')
+            file_path_1 = os.path.join(out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part1.png')
             grid_1 = make_grid(torch.stack(first_half), padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1)
             save_image(grid_1, file_path_1)
             self.wandb_run.log({f"age_changing/age_latent_changing_{name}_part1": wandb.Image(file_path_1)})
 
             # Save the second half
-            file_path_2 = os.path.join(self._out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part2.png')
+            file_path_2 = os.path.join(out_dir, f'age_latent_changing_{age_latent_ranges_original}_{name}_part2.png')
             grid_2 = make_grid(torch.stack(second_half), padding=padding_value, pad_value=255, nrow=len(age_latent_ranges)-1)
             save_image(grid_2, file_path_2)
             self.wandb_run.log({f"age_changing/age_latent_changing_{name}_part2": wandb.Image(file_path_2)})
@@ -1178,7 +1402,7 @@ class Tester:
             make_subject_image(all_subject_3, age_latent_ranges_original, 'subject_3')
             make_subject_image(all_subject_4, age_latent_ranges_original, 'subject_4')
 
-        line_to_add = 'age_latent_changing original ages: ' + str(original_ages)
+        line_to_add = 'age_latent_changing original metadata: \nAGE = ' + str(original_ages) + '\nFNAME = ' + str(original_fname)
         filename = os.path.join(self._out_dir, 'results.txt')
 
         if not os.path.exists(filename):
@@ -1191,7 +1415,6 @@ class Tester:
             file.write(line_to_add)
             file.write('\n' * 2)
 
-        
         # make pre/post model mesh
 
         def render_and_diff(pre, post):
@@ -1265,6 +1488,9 @@ class Tester:
         Output: two scatter plots. One for assigned age vs predicted age after second encoding and one for GT age vs predicted age after second encoding. Both the training and val/test set are plotted
         
         """
+
+        out_dir = os.path.join(self._out_dir, "encoder_decoder_accuracy")
+        os.makedirs(out_dir, exist_ok=True)
 
         latent_size = self._manager.model_latent_size
         age_latent_size = self._manager._age_latent_size
@@ -1496,7 +1722,7 @@ class Tester:
                     test_name =  test_name + '_train'
                 else:
                     test_name = test_name + '_eval'
-                file_path_svg = os.path.join(self._out_dir, f'{test_name}_accuracy_scatter_plot.svg')
+                file_path_svg = os.path.join(out_dir, f'{test_name}_accuracy_scatter_plot.svg')
                 plt.savefig(file_path_svg, bbox_inches='tight')
                 fig = plt.gcf()
                 self.wandb_run.log({f"encoder_decoder/{test_name}_accuracy_scatter_plot": wandb.Image(fig)})
@@ -1541,9 +1767,7 @@ class Tester:
             ids =  [id.replace('.obj', '') for id in ids]
             # Look up the entry in the metadata file using the 'id' column
             for entry_id in ids:
-                if 'friday' in self._data_type:
-                    entry_id = entry_id
-                elif 'combined' in self._data_type:
+                if 'combined' in self._data_type:
                     entry_id = int(entry_id)
                 dataset_row = metadata.loc[metadata['id'] == entry_id, 'Dataset']
                 age_row = metadata.loc[metadata['id'] == entry_id, 'AgeYears']   
@@ -1554,7 +1778,7 @@ class Tester:
                 if not dataset_row.empty and not age_row.empty:
                     ages_list.append(age_row.values[0])
                     ages_decimals_list.append(age_decimals_row.values[0])
-                    data_type_list.append(split_type)  
+                    data_type_list.append(split_type)
                     dataset_list.append(dataset_row.values[0])
                     fname_list.append(fname)
         
@@ -1641,14 +1865,46 @@ class Tester:
             test_ages = []
             val_ages = []
 
+            # Initialize separate lists for each dataset
+            lyhm = []
+            lsfm = []
+            necker = []
+            facescape = []
+            mimicme = []
+            apert = []
+            muenke = []
+            crouzon = []
+
+            unknown = []
+
             # Iterate over data_types and ages simultaneously
-            for data_type, age in zip(data_type_list, ages_list):
+            for data_type, age, dataset, fname in zip(data_type_list, ages_list, dataset_list, fname_list):
                 if data_type == 'train':
                     train_ages.append(age)
                 elif data_type == 'test':
                     test_ages.append(age)
                 elif data_type == 'val':
                     val_ages.append(age)
+
+                if dataset == 'LYHM':
+                    lyhm.append(age)
+                elif dataset == 'LSFM':
+                    lsfm.append(age)
+                    print(f"LSFM age: {age}, fname: {fname}")
+                elif dataset == 'Necker' or dataset == 'Paeds':
+                    necker.append(age)
+                elif dataset == 'FaceScape':
+                    facescape.append(age)
+                elif dataset == 'MimicMe':
+                    mimicme.append(age)
+                elif dataset == 'Apert':
+                    apert.append(age)
+                elif dataset == 'Muenke':
+                    muenke.append(age)
+                elif dataset == 'Crouzon':
+                    crouzon.append(age)
+                else:
+                    unknown.append((dataset, age, fname))
             plt.clf()
 
             # Calculate the histogram counts for each split
@@ -1677,8 +1933,10 @@ class Tester:
 
             if 'combined' in self._data_type or 'friday' in self._data_type:
                 x = 0.02
+            elif 'head' in self._data_type:
+                x = 0.45
             else:
-                x = 0.60
+                x = 0.55
 
             # Annotate min and max for each set
             plt.annotate(f'Total number of subjects: {total_subjects}', xy=(x, 0.95), xycoords='axes fraction')
@@ -1696,25 +1954,38 @@ class Tester:
 
         if not os.path.exists(storage_path):
 
-            # Initialize separate lists for train, test, and val ages
-            lyhm = []
-            lsfm = []
-            necker = []
-            facescape = []
-            mimicme = []
+            # # Initialize separate lists for train, test, and val ages
+            # lyhm = []
+            # lsfm = []
+            # necker = []
+            # facescape = []
+            # mimicme = []
+            # apert = []
+            # muenke = []
+            # crouzon = []
 
-            # Iterate over data_types and ages simultaneously
-            for dataset, age in zip(dataset_list, ages_list):
-                if dataset == 'LYHM':
-                    lyhm.append(age)
-                elif dataset == 'LSFM':
-                    lsfm.append(age)
-                elif dataset == 'Necker':
-                    necker.append(age)
-                elif dataset == 'FaceScape':
-                    facescape.append(age)
-                elif dataset == 'MimicMe':
-                    mimicme.append(age)
+            # unknown = []
+
+            # # Iterate over data_types and ages simultaneously
+            # for dataset, age, fname in zip(dataset_list, ages_list, fname_list):
+            #     if dataset == 'LYHM':
+            #         lyhm.append(age)
+            #     elif dataset == 'LSFM':
+            #         lsfm.append(age)
+            #     elif dataset == 'Necker' or dataset == 'Paeds':
+            #         necker.append(age)
+            #     elif dataset == 'FaceScape':
+            #         facescape.append(age)
+            #     elif dataset == 'MimicMe':
+            #         mimicme.append(age)
+            #     elif dataset == 'Apert':
+            #         apert.append(age)
+            #     elif dataset == 'Muenke':
+            #         muenke.append(age)
+            #     elif dataset == 'Crouzon':
+            #         crouzon.append(age)
+            #     else:
+            #         unknown.append((dataset, fname, age))
             plt.clf()
 
             # Calculate the histogram counts for each split
@@ -1723,11 +1994,16 @@ class Tester:
             n_necker, _ = np.histogram(necker, bins=bin_edges)
             n_facescape, _ = np.histogram(facescape, bins=bin_edges)
             n_mimicme, _ = np.histogram(mimicme, bins=bin_edges)
+            n_apert, _ = np.histogram(apert, bins=bin_edges)
+            n_muenke, _ = np.histogram(muenke, bins=bin_edges)
+            n_crouzon, _ = np.histogram(crouzon, bins=bin_edges)
 
             # Plotting (stacking bars)
             plt.figure(figsize=(10, 6))
             if 'combine' in self._data_type or 'friday' in self._data_type:
                 plt.hist([lyhm, lsfm, necker, facescape, mimicme], bins=bin_edges, stacked=True, label=['LYHM', 'LSFM', 'Necker', 'FaceScape', 'MimicMe'], edgecolor='black', alpha=0.5)
+            elif 'head' in self._data_type:
+                plt.hist([lyhm, necker, apert, muenke, crouzon], bins=bin_edges, stacked=True, label=['LYHM', 'Necker', 'Apert', 'Muenke', 'Crouzon'], edgecolor='black', alpha=0.5)
             else:
                 plt.hist([lsfm, necker], bins=bin_edges, stacked=True, label=['LSFM', 'Necker'], edgecolor='black', alpha=0.5)
             plt.legend(loc='upper right', bbox_to_anchor=(1, 1))
@@ -1742,12 +2018,14 @@ class Tester:
             # Annotate the bars with the total count of subjects for each age group
             mid_points = [(bin_edges[i] + bin_edges[i + 1]) / 2 for i in range(len(bin_edges) - 1)]
             for i in range(len(mid_points)):
-                total_count = int(n_lyhm[i] + n_lsfm[i] + n_necker[i] + n_facescape[i] + n_mimicme[i])  # Sum of counts across train, val, and test
+                total_count = int(n_lyhm[i] + n_lsfm[i] + n_necker[i] + n_facescape[i] + n_mimicme[i] + n_apert[i] + n_muenke[i] + n_crouzon[i])  # Sum of counts across train, val, and test
                 plt.text(mid_points[i], total_count + 0, f"{total_count}", 
                         ha='center', va='bottom', color='black', fontsize=9)
 
             if 'combined' in self._data_type or 'friday' in self._data_type:
                 x = 0.02
+            elif 'head' in self._data_type:
+                x = 0.55
             else:
                 x = 0.60
 
@@ -1755,11 +2033,18 @@ class Tester:
             plt.annotate(f'Total number of subjects: {total_subjects}', xy=(x, 0.95), xycoords='axes fraction')
             if 'combine' in self._data_type  or 'friday' in self._data_type:
                 plt.annotate(f'LYHM count: {len(lyhm)}', xy=(x, 0.90), xycoords='axes fraction')
-            plt.annotate(f'LSFM count: {len(lsfm)}', xy=(x, 0.85), xycoords='axes fraction')
+            if 'head' in self._data_type:
+                plt.annotate(f'LYHM count: {len(lyhm)}', xy=(x, 0.85), xycoords='axes fraction')
+            if 'head' not in self._data_type:
+                plt.annotate(f'LSFM count: {len(lsfm)}', xy=(x, 0.85), xycoords='axes fraction')
             plt.annotate(f'Necker count: {len(necker)}', xy=(x, 0.80), xycoords='axes fraction')
             if 'combine' in self._data_type  or 'friday' in self._data_type:
                 plt.annotate(f'FaceScape count: {len(facescape)}', xy=(x, 0.75), xycoords='axes fraction')
                 plt.annotate(f'MimicMe count: {len(mimicme)}', xy=(x, 0.70), xycoords='axes fraction')
+            if 'head' in self._data_type:
+                plt.annotate(f'Apert count: {len(apert)}', xy=(x, 0.75), xycoords='axes fraction')
+                plt.annotate(f'Muenke count: {len(muenke)}', xy=(x, 0.70), xycoords='axes fraction')
+                plt.annotate(f'Crouzon count: {len(crouzon)}', xy=(x, 0.65), xycoords='axes fraction')
 
             plt.savefig(storage_path)
         else:
@@ -1773,6 +2058,9 @@ class Tester:
 
         Output: plot of training loss and scatter plot of predicted age against ground truth age
         """
+
+        out_dir = os.path.join(self._out_dir, "mlp")
+        os.makedirs(out_dir, exist_ok=True)
 
         _, train_feature_latents, _, train_gt_age, _, _ = self.process_data(train_loader, datasets=None, only_diagonal=True)
         _, eval_feature_latents, _, eval_gt_age, _, _ = self.process_data(eval_loader, datasets=None, only_diagonal=True)
@@ -1834,7 +2122,7 @@ class Tester:
         plt.ylabel('Loss')
         plt.grid(True)
 
-        file_path = os.path.join(self._out_dir, 'mlp_training_loss.png')
+        file_path = os.path.join(out_dir, 'mlp_training_loss.png')
         plt.savefig(file_path)
         self.wandb_run.log({"mlp/mlp_training_loss": wandb.Image(file_path)})
 
@@ -1882,9 +2170,9 @@ class Tester:
         plt.xticks(range(0, 18))
         plt.yticks(range(0, 18))
 
-        # file_path = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.png')
+        # file_path = os.path.join(out_dir, f'mlp_age_prediction_{age_range}.png')
         # plt.savefig(file_path)
-        file_path_svg = os.path.join(self._out_dir, f'mlp_age_prediction_{age_range}.svg')
+        file_path_svg = os.path.join(out_dir, f'mlp_age_prediction_{age_range}.svg')
         plt.savefig(file_path_svg)
         fig = plt.gcf()
         self.wandb_run.log({"mlp/mlp_age_prediction": wandb.Image(fig)})
@@ -1908,8 +2196,8 @@ class Tester:
         plt.xticks(range(0, 18))
         plt.yticks(range(0, 18))
 
-        # file_path_clean = os.path.join(self._out_dir, 'mlp_age_prediction_clean.png')
-        file_path_clean_svg = os.path.join(self._out_dir, 'mlp_age_prediction_clean.svg')
+        # file_path_clean = os.path.join(out_dir, 'mlp_age_prediction_clean.png')
+        file_path_clean_svg = os.path.join(out_dir, 'mlp_age_prediction_clean.svg')
         # plt.savefig(file_path_clean)
         plt.savefig(file_path_clean_svg)
         fig = plt.gcf()
@@ -1934,6 +2222,9 @@ class Tester:
             - One for all non-age latents grouped by dataset.
 
         """
+
+        out_dir = os.path.join(self._out_dir, "tsne")
+        os.makedirs(out_dir, exist_ok=True)
 
         random_state = 42
         self.set_seed(random_state)
@@ -2003,14 +2294,14 @@ class Tester:
             plt.xlabel('t-SNE Dimension 1')
             plt.ylabel('t-SNE Dimension 2')
 
-            file_path = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
+            file_path = os.path.join(out_dir, f'tsne_feature_latents_subset_{name}.svg')
             plt.savefig(file_path)
             fig = plt.gcf()
             self.wandb_run.log({f"tsne/tsne_feature_latents_subset_{name}": wandb.Image(fig)})
 
 
             # if name == "all_dataset" or name == "all":
-            #     file_path_svg = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}.svg')
+            #     file_path_svg = os.path.join(out_dir, f'tsne_feature_latents_subset_{name}.svg')
             #     plt.savefig(file_path_svg)
 
             plt.close()
@@ -2024,7 +2315,7 @@ class Tester:
                 plt.xlabel('t-SNE Dimension 1')
                 plt.ylabel('t-SNE Dimension 2')
 
-                file_path = os.path.join(self._out_dir, f'tsne_feature_latents_subset_{name}_dataset.svg')
+                file_path = os.path.join(out_dir, f'tsne_feature_latents_subset_{name}_dataset.svg')
                 plt.savefig(file_path)
                 fig = plt.gcf()
                 self.wandb_run.log({f"tsne/tsne_feature_latents_subset_{name}_dataset": wandb.Image(fig)})
@@ -2041,7 +2332,7 @@ class Tester:
         # plt.xlabel('t-SNE Dimension 1')
         # plt.ylabel('t-SNE Dimension 2')
 
-        # file_path = os.path.join(self._out_dir, 'tsne_age_latents_by_identity.png')
+        # file_path = os.path.join(out_dir, 'tsne_age_latents_by_identity.png')
         # plt.savefig(file_path)
         # self.log['test/tsne_age_latents_by_identity'].upload(file_path)
         # plt.close()
@@ -2054,7 +2345,7 @@ class Tester:
         # plt.xlabel('t-SNE Dimension 1')
         # plt.ylabel('t-SNE Dimension 2')
 
-        # file_path = os.path.join(self._out_dir, 'tsne_age_latents_by_dataset.png')
+        # file_path = os.path.join(out_dir, 'tsne_age_latents_by_dataset.png')
         # plt.savefig(file_path)
         # self.log['test/tsne_age_latents_by_dataset'].upload(file_path)
         # plt.close()
@@ -2353,7 +2644,10 @@ class Tester:
             file.write(str(gt_ages.tolist()) + '\n\n')
 
     def plot_proportions(self):
-        output_directory = self._out_dir
+
+        output_directory = os.path.join(self._out_dir, "proportions")
+        os.makedirs(output_directory, exist_ok=True)
+
         if 'friday' in self._data_type:
             dataset_type = 'friday_unified'
         elif 'combined' in self._data_type:
@@ -2924,6 +3218,403 @@ class Tester:
             ls.append(torch.linspace(s, f, steps))
         res = torch.stack(ls)
         return res.t()
+
+    def _fit_and_eval_probes(self, out_dir, X_train, y_train, X_test, y_test, tag: str):
+        """
+        Fit several sklearn classifiers on X_train/y_train and evaluate on test.
+
+        Saves:
+          accuracies_{tag}.json
+          classification_report_{tag}.json
+          confmat_{clf}_{tag}.svg
+        """
+        os.makedirs(out_dir, exist_ok=True)
+
+        # A small, robust set of probes
+        clfs = {
+            "logreg": LogisticRegression(max_iter=5000, class_weight="balanced"),
+            "svm_rbf": SVC(kernel="rbf", probability=False, class_weight="balanced"),
+            "lda": LinearDiscriminantAnalysis(),
+            "qda": QuadraticDiscriminantAnalysis(),
+        }
+
+        accuracies = {}
+        reports = {}
+
+        labels = unique_labels(np.array(y_test))
+
+        for name, clf in clfs.items():
+            clf.fit(X_train, y_train)
+
+            y_pred = clf.predict(X_test)
+
+            accuracies[name] = float(np.mean(np.array(y_pred) == np.array(y_test)))
+            reports[name] = classification_report(y_test, y_pred, output_dict=True)
+
+            cf = confusion_matrix(y_test, y_pred, normalize="true")
+            utils.plot_confusion_matrix(
+                cf,
+                labels,
+                os.path.join(out_dir, f"confmat_{name}_{tag}.svg"),
+            )
+
+        with open(os.path.join(out_dir, f"accuracies_{tag}.json"), "w") as f:
+            json.dump(accuracies, f, indent=2)
+
+        with open(os.path.join(out_dir, f"classification_report_{tag}.json"), "w") as f:
+            json.dump(reports, f, indent=2)
+
+        return clfs
+
+    def _plot_lda_embedding(self, out_dir, X_train, y_train, X_test, y_test, tag: str):
+        """
+        Fit LDA on train and produce 2D scatter plots of train/test distributions.
+        """
+        lda2 = LinearDiscriminantAnalysis(n_components=2)
+        Ztr = lda2.fit_transform(X_train, y_train)
+        Zts = lda2.transform(X_test)
+
+        df = pd.DataFrame({
+            "x1": np.concatenate([Ztr[:, 0], Zts[:, 0]]),
+            "x2": np.concatenate([Ztr[:, 1], Zts[:, 1]]),
+            "class": np.concatenate([np.array(y_train), np.array(y_test)]),
+            "split": ["train"] * len(y_train) + ["test"] * len(y_test),
+        })
+
+        plt.clf()
+        sns.set_theme(style="ticks")
+
+        # --- NEW: enforce consistent class->color mapping across layers ---
+        # Use all classes present across train+test, in a stable order
+        all_classes = pd.Index(np.concatenate([np.array(y_train), np.array(y_test)])).unique()
+        # If you prefer sorted order instead (recommended for reproducibility), use:
+        # all_classes = sorted(map(str, all_classes))  # if classes are strings
+        hue_order = list(all_classes)
+
+        palette = dict(zip(hue_order, sns.color_palette(n_colors=len(hue_order))))
+        # ---------------------------------------------------------------
+
+        sns.scatterplot(
+            data=df,
+            x="x1", y="x2",
+            hue="class",
+            hue_order=hue_order,
+            palette=palette,
+            style="split",
+        )
+        plt.savefig(os.path.join(out_dir, f"lda2_embedding_{tag}.svg"))
+
+        # Optional: train-only KDE backgrounds (like the repo)
+        plt.clf()
+
+        ax = sns.kdeplot(
+            data=df[df["split"] == "train"],
+            x="x1", y="x2",
+            hue="class",
+            hue_order=hue_order,
+            palette=palette,
+            fill=True,
+            alpha=0.5,
+            common_norm=False,
+            legend=False,  # important: don't let kdeplot create its own legend
+        )
+
+        # Overlay test points (no style legend)
+        sns.scatterplot(
+            data=df[df["split"] == "test"],
+            x="x1", y="x2",
+            hue="class",
+            hue_order=hue_order,
+            palette=palette,
+            s=35,          # make points larger (adjust as you like)
+            linewidth=0.3, # helps visibility
+            edgecolor="black",
+            ax=ax,
+            legend=False,  # we will create our own legend
+        )
+        
+
+        # Build a clean legend with colored blocks (no "split")
+        handles = [Patch(facecolor=palette[c], edgecolor="black", label=str(c)) for c in hue_order]
+        ax.legend(
+            handles=handles,
+            title="class",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            borderaxespad=0.0,
+            frameon=True,
+        )
+
+        plt.savefig(
+            os.path.join(out_dir, f"lda2_embedding_kde_{tag}.svg"),
+            bbox_inches="tight",
+        )
+
+        # plt.clf()
+        # sns.set_theme(style="ticks")
+        # sns.scatterplot(data=df, x="x1", y="x2", hue="class", style="split")
+        # plt.savefig(os.path.join(out_dir, f"lda2_embedding_{tag}.svg"))
+
+        # # Optional: train-only KDE backgrounds (like the repo)
+        # plt.clf()
+        # sns.kdeplot(
+        #     data=df[df["split"] == "train"],
+        #     x="x1", y="x2",
+        #     hue="class",
+        #     fill=True,
+        #     alpha=0.5,
+        # )
+        # sns.scatterplot(
+        #     data=df[df["split"] == "test"],
+        #     x="x1", y="x2",
+        #     hue="class",
+        #     style="split",
+        #     legend=False,
+        #     s=10,
+        # )
+        # plt.savefig(os.path.join(out_dir, f"lda2_embedding_kde_{tag}.svg"))
+
+    def syndrome_predictability_from_subspaces(self):
+        """
+        Main entry point:
+          - encode train/test -> split into id/age latents
+          - fit probes and evaluate syndrome predictability from each subspace
+          - plot LDA 2D embeddings
+        """
+        id_dim = int(self._config["model"]["latent_size"])
+        age_dim = int(self._config["model"]["age_latent_size"])
+
+        out_dir = os.path.join(self._out_dir, "syndrome_probes")
+        os.makedirs(out_dir, exist_ok=True)
+
+        # Xtr_id, Xtr_age, ytr = self._encode_split_latents_and_labels(self._train_loader, id_dim=id_dim, age_dim=age_dim)
+        # Xts_id, Xts_age, yts = self._encode_split_latents_and_labels(self._test_loader, id_dim=id_dim, age_dim=age_dim)
+
+        datasets = pd.read_csv(self._config['data']['dataset_metadata_path'], usecols=['id', 'Dataset'])
+
+        _, train_id_latents, train_age_latents, _, _, train_data_dataset = self.process_data(self._train_loader, datasets=datasets, only_diagonal=True)
+        _, test_id_latents, test_age_latents, _, _, test_data_dataset = self.process_data(self._test_loader, datasets=datasets, only_diagonal=True)
+
+        # ---- Identity latents: syndrome should be predictable
+        # self._fit_and_eval_probes(out_dir, train_id_latents, train_data_dataset, test_id_latents, test_data_dataset, tag="id_latents")
+        self._plot_lda_embedding(out_dir, train_id_latents, train_data_dataset, test_id_latents, test_data_dataset, tag="id_latents")
+
+        # ---- Age latents: syndrome ideally NOT predictable
+        # self._fit_and_eval_probes(out_dir, train_age_latents, train_data_dataset, test_age_latents, test_data_dataset, tag="age_latents")
+        self._plot_lda_embedding(out_dir, train_age_latents, train_data_dataset, test_age_latents, test_data_dataset, tag="age_latents")
+
+    def growth_trajectory_interpolate_towards_healthy_mean(
+        self,
+        eval_loader,
+        target_age_interventions=(0, 5, 10),
+        age_range=(0, 17),
+        subject_selector="first",   # "first" | "random"
+        healthy_strength=0.6,       # 0=no shift, 1=full shift to sampled healthy target
+        healthy_std_scale=0.75,     # sample target around healthy mean by +/- std_scale * std
+        error_max_scale=5.0,
+        seed=42,
+        out_subdir="interpolation",
+    ):
+        """
+        Growth trajectories for ONE subject with an "intervention" (identity shift towards a sampled healthy target)
+        applied at different ages A.
+
+        IMPORTANT semantics (matches your description):
+        - Always start from age 0 baseline identity (original id).
+        - For each intervention age A:
+            * Ages < A: original identity (no interpolation yet)
+            * Ages >= A: interpolated identity (shifted towards healthy target)
+        - Thus the frame at age==A is POST-intervention.
+
+        Output: 6 rows (for A=0,5,10): renders 0..17 + diffs vs age 0 for each A.
+        """
+
+        import random as _random
+
+        self.set_seed(seed)
+
+        out_dir = os.path.join(self._out_dir, out_subdir)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # ----------------------------
+        # Helpers
+        # ----------------------------
+        def _get_age_norm_stats():
+            storage_path = os.path.join(
+                self._manager._precomputed_storage_path, f"normalise_age_{self._data_type}.pkl"
+            )
+            with open(storage_path, "rb") as f:
+                age_train_mean, age_train_std = pickle.load(f)
+            return float(age_train_mean), float(age_train_std)
+
+        def _age_to_latent_value(age_years: float, age_mean: float, age_std: float):
+            return (float(age_years) - age_mean) / age_std
+
+        def _set_age_latents(z_vec: torch.Tensor, age_years: float, age_mean: float, age_std: float):
+            age_latent_size = int(self._config["model"]["age_latent_size"])
+            age_val = _age_to_latent_value(age_years, age_mean, age_std)
+
+            if age_latent_size == 1:
+                z_vec[:, -1:] = age_val
+                return z_vec
+
+            z_vec[:, -age_latent_size:] = age_val
+            return z_vec
+
+        def _decode_and_render(z_batch: torch.Tensor):
+            gen_verts = self._manager.generate(z_batch.to(self._device))
+            if self._normalized_data:
+                gen_verts = self._unnormalize_verts(gen_verts)
+            renderings = self._manager.render(gen_verts).detach().cpu()
+            return renderings, gen_verts
+
+        def _render_diff(verts: torch.Tensor, ref_verts: torch.Tensor):
+            diffs = self._manager.compute_vertex_errors(verts, ref_verts)
+            return self._manager.render(verts, diffs, error_max_scale=error_max_scale).detach().cpu()
+
+        def _pick_subject():
+            batch = next(iter(eval_loader))
+
+            if self._config["data"].get("swap_features", False):
+                x = batch.x[self._manager.batch_diagonal_idx, ::]
+            else:
+                x = batch.x
+
+            fnames = list(batch.fname) if hasattr(batch, "fname") else [None] * x.shape[0]
+            ages = batch.age.detach().cpu().numpy() if hasattr(batch, "age") else None
+
+            idx = _random.randrange(0, x.shape[0]) if subject_selector == "random" else 0
+            return x[idx : idx + 1], (fnames[idx] if fnames else None), (float(ages[idx]) if ages is not None else None)
+
+        def _healthy_mu_sigma_from_latent_stats(id_dim: int):
+            if ("healthy_means" in self.latent_stats) and ("healthy_stds" in self.latent_stats):
+                mu_full = self.latent_stats["healthy_means"]
+                sd_full = self.latent_stats["healthy_stds"]
+            elif ("z_healthy_means" in self.latent_stats) and ("z_healthy_stds" in self.latent_stats):
+                mu_full = self.latent_stats["z_healthy_means"]
+                sd_full = self.latent_stats["z_healthy_stds"]
+            else:
+                raise KeyError(
+                    "Could not find healthy mean/std in self.latent_stats. "
+                    "Expected keys: healthy_means/healthy_stds (or z_healthy_means/z_healthy_stds)."
+                )
+
+            if isinstance(mu_full, torch.Tensor):
+                mu_full = mu_full.detach().cpu()
+            if isinstance(sd_full, torch.Tensor):
+                sd_full = sd_full.detach().cpu()
+
+            mu_id = mu_full[:id_dim].float().numpy()
+            sd_id = sd_full[:id_dim].float().numpy()
+            sd_id = np.where(sd_id < 1e-8, 1e-8, sd_id)
+            return mu_id, sd_id
+
+        # ----------------------------
+        # Setup subject + healthy target
+        # ----------------------------
+        x_subj, fname_subj, gt_age_subj = _pick_subject()
+
+        z_subj = self._manager.encode(x_subj.to(self._device)).detach()
+        age_latent_size = int(self._config["model"]["age_latent_size"])
+        id_dim = int(z_subj.shape[1] - age_latent_size)
+
+        z_id = z_subj[:, :-age_latent_size].clone()
+        z_age = z_subj[:, -age_latent_size:].clone()
+
+        age_mean, age_std = _get_age_norm_stats()
+
+        mu_id, sd_id = _healthy_mu_sigma_from_latent_stats(id_dim=id_dim)
+        eps = np.random.randn(1, id_dim).astype(np.float32)
+        z_id_healthy_target = mu_id[None, :] + eps * (healthy_std_scale * sd_id[None, :])
+        z_id_healthy_target = torch.from_numpy(z_id_healthy_target).to(self._device)
+
+        # ----------------------------
+        # Build trajectories
+        # ----------------------------
+        min_age, max_age = int(age_range[0]), int(age_range[1])
+        ages_full = list(range(min_age, max_age + 1))
+        n_cols = len(ages_full)
+
+        all_rows = []
+
+        for A in target_age_interventions:
+            A = int(A)
+            if A < min_age or A > max_age:
+                raise ValueError(f"Intervention age {A} is outside age_range {age_range}.")
+
+            # --------
+            # PRE: ages min_age .. A-1 with ORIGINAL identity
+            # --------
+            z_list_pre = []
+            for age in range(min_age, A):
+                z_tmp = torch.cat([z_id.clone(), z_age.clone()], dim=1)
+                z_tmp = _set_age_latents(z_tmp, age, age_mean, age_std)
+                z_list_pre.append(z_tmp)
+
+            # --------
+            # SHIFT identity at age A (post-intervention identity)
+            # --------
+            z_at_A = torch.cat([z_id.clone(), z_age.clone()], dim=1)
+            z_at_A = _set_age_latents(z_at_A, A, age_mean, age_std)
+
+            z_id_shifted = z_at_A[:, :-age_latent_size]
+            z_id_shifted = z_id_shifted + float(healthy_strength) * (z_id_healthy_target - z_id_shifted)
+
+            # --------
+            # POST: ages A .. max_age with SHIFTED identity
+            # --------
+            z_list_post = []
+            for age in range(A, max_age + 1):
+                z_tmp = torch.cat([z_id_shifted.clone(), z_at_A[:, -age_latent_size:].clone()], dim=1)
+                z_tmp = _set_age_latents(z_tmp, age, age_mean, age_std)
+                z_list_post.append(z_tmp)
+
+            # Combine (note: age==A is post-intervention)
+            z_parts = []
+            if len(z_list_pre) > 0:
+                z_parts.append(torch.cat(z_list_pre, dim=0))
+            z_parts.append(torch.cat(z_list_post, dim=0))
+            z_full = torch.cat(z_parts, dim=0)  # (18, latent_dim)
+
+            renderings, verts = _decode_and_render(z_full)
+
+            ref_verts = verts[0:1, ...]  # age=min_age baseline (original id, age 0)
+            diffs_r = _render_diff(verts, ref_verts)
+
+            all_rows.extend([img for img in renderings])
+            all_rows.extend([img for img in diffs_r])
+
+        # ----------------------------
+        # Save 6-row figure
+        # ----------------------------
+        stacked = torch.stack(all_rows, dim=0)
+        grid = make_grid(stacked, padding=10, pad_value=255, nrow=n_cols)
+
+        fname_tag = f"{fname_subj}" if fname_subj is not None else "subject"
+        file_base = (
+            f"growth_traj_{fname_tag}_A{list(target_age_interventions)}"
+            f"_hs{healthy_strength}_std{healthy_std_scale}"
+        ).replace(" ", "").replace("/", "_")
+
+        out_path = os.path.join(out_dir, f"{file_base}.png")
+        save_image(grid, out_path)
+
+        if getattr(self, "wandb_run", None) is not None:
+            self.wandb_run.log({f"interpolation/{file_base}": wandb.Image(out_path)})
+
+        try:
+            results_path = os.path.join(self._out_dir, "results.txt")
+            with open(results_path, "a") as f:
+                f.write("Growth trajectory intervention (healthy mean from latent_stats)\n")
+                f.write(f"  subject_fname: {fname_subj}\n")
+                f.write(f"  subject_gt_age: {gt_age_subj}\n")
+                f.write(f"  interventions: {list(target_age_interventions)}\n")
+                f.write(f"  healthy_strength: {healthy_strength}\n")
+                f.write(f"  healthy_std_scale: {healthy_std_scale}\n")
+                f.write(f"  saved: {out_path}\n\n")
+        except Exception:
+            pass
+
 
 
 if __name__ == '__main__':

@@ -201,7 +201,8 @@ class MeshDataset(Dataset):
         self._normalize = normalize
         self._template = template
 
-        self._data_type = root['dataset_type'].split("_", 1)[1]
+        # self._data_type = root['dataset_type'].split("_", 1)[1]
+        self._data_type = root['dataset_type']
         self._dataset_age_range = root['dataset_age_range']
 
         self._train_names, self._test_names, self._val_names = self.split_data(
@@ -306,7 +307,7 @@ class MeshDataset(Dataset):
         first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
         first_mesh.vertices = self.mean.detach().cpu().numpy()
         first_mesh.export(
-            os.path.join(self._precomputed_storage_path, 'mean.obj'))
+            os.path.join(self._precomputed_storage_path, f'mean_{self._data_type}.obj'))
 
     def process(self):
         for i, fname in tqdm.tqdm(enumerate(self.raw_file_names)):
@@ -340,7 +341,8 @@ class MeshInMemoryDataset(InMemoryDataset):
         if not os.path.isdir(precomputed_storage_path):
             os.mkdir(precomputed_storage_path)
 
-        self._data_type = config['data']['dataset_type'].split("_", 1)[1]
+        # self._data_type = config['data']['dataset_type'].split("_", 1)[1]
+        self._data_type = config['data']['dataset_type']
 
         self._dataset_type = dataset_type
         self._normalize = normalize
@@ -414,6 +416,9 @@ class MeshInMemoryDataset(InMemoryDataset):
         # if 'friday' in str(self._config_data['dataset_type']):
         #     # file_id = file_id.split('f', 1)[-1]
         #     file_id = fname.split('.', 1)[0]
+
+        if 'syn' in str(self._config_data['dataset_type']):
+            file_id = file_id.replace('_', '')
                 
         return file_id 
 
@@ -433,7 +438,10 @@ class MeshInMemoryDataset(InMemoryDataset):
 
             if self._config['model']['age_disentanglement']:
                 # using train_test_split from sklearn
-                age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'age_bins', 'AgeYears'])
+                if 'head' in self._data_type:
+                    age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'age_bins', 'AgeYears', 'Head Used'])
+                else:
+                    age_metadata = pd.read_csv(self._config_data['dataset_metadata_path'], usecols=['id', 'age_bins', 'AgeYears'])
                 all_ages = []
                 all_ages_bins = []
                 for i, fname in enumerate(all_file_names_copy):
@@ -441,13 +449,23 @@ class MeshInMemoryDataset(InMemoryDataset):
                     if file_id in age_metadata['id'].values:
                         age = age_metadata.loc[age_metadata['id'] == file_id, 'AgeYears'].values[0]
                         age_bins = age_metadata.loc[age_metadata['id'] == file_id, 'age_bins'].values[0]
+                        if 'head' in self._data_type:
+                            head_used = age_metadata.loc[age_metadata['id'] == file_id, 'Head Used'].values[0]
+                            if head_used != 'y':
+                                print(f"Head not used for {fname}, removing from dataset.")
+                                if fname in all_file_names:
+                                    all_file_names.remove(fname)
+                                continue
+
                         if age >= int(min_age) and age <= int(max_age):
                             all_ages.append(age)
                             all_ages_bins.append(age_bins)
                         else:
                             all_file_names.remove(fname)
+                            print(f"Removed {fname} with age {age}")
                     else:
                         all_file_names.remove(fname)
+                        print(f"Removed {fname} with no age information")
 
                 # Check for ages with only one occurrence
                 unique_ages = {age: all_ages.count(age) for age in set(all_ages)}
@@ -460,18 +478,57 @@ class MeshInMemoryDataset(InMemoryDataset):
                 else:
                     # Proceed with the original stratification
                     stratify_ages = all_ages
+
+                ### NEW SPLIT STRATEGY TO AVOID STRATIFYING ON CLASSES WITH ONLY ONE OCCURRENCE ###
+
+                train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(
+                    all_file_names,
+                    stratify_ages,
+                    test_size=0.15,
+                    stratify=stratify_ages,
+                    random_state=42
+                )
+
+                from collections import Counter
+                temp_counts = Counter(temp_test_ages)
+                few = {k: v for k, v in temp_counts.items() if v < 2}
+                print(f"[split_data] temp_test_list size: {len(temp_test_list)}")
+                print(f"[split_data] temp_test_ages unique classes: {len(temp_counts)}")
+                print(f"[split_data] classes with <2 samples in temp_test_ages: {few}")
+
+                val_frac_of_temp = 2.0 / 3.0  # consistent ratio (overall ~10% val, ~5% test)
+
+                if min(temp_counts.values()) >= 2:
+                    test_list, val_list, _, _ = train_test_split(
+                        temp_test_list,
+                        temp_test_ages,
+                        test_size=val_frac_of_temp,
+                        stratify=temp_test_ages,
+                        random_state=42
+                    )
+                else:
+                    print("[split_data] WARNING: cannot stratify val/test split "
+                          f"(min class count in temp set = {min(temp_counts.values())}). "
+                          "Splitting without stratify.")
+                    test_list, val_list = train_test_split(
+                        temp_test_list,
+                        test_size=val_frac_of_temp,
+                        random_state=42
+                    )
+
+                #### END NEW SPLIT ####
     
 
-                # Split the data into train and temporary test sets
-                train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(all_file_names, stratify_ages, test_size=0.15, stratify=stratify_ages, random_state=42)
-                # Check the number of unique classes in temp_test_ages
-                num_classes = len(set(temp_test_ages))
+                # # Split the data into train and temporary test sets
+                # train_list, temp_test_list, train_ages, temp_test_ages = train_test_split(all_file_names, stratify_ages, test_size=0.15, stratify=stratify_ages, random_state=42)
+                # # Check the number of unique classes in temp_test_ages
+                # num_classes = len(set(temp_test_ages))
 
-                # If the number of unique classes is greater than the size of the temporary test set, do not stratify the split
-                if num_classes > len(temp_test_list):
-                    test_list, val_list = train_test_split(temp_test_list, test_size=0.33, random_state=42)
-                else:
-                    test_list, val_list, _, _ = train_test_split(temp_test_list, temp_test_ages, test_size=0.55, stratify=temp_test_ages, random_state=42)
+                # # If the number of unique classes is greater than the size of the temporary test set, do not stratify the split
+                # if num_classes > len(temp_test_list):
+                #     test_list, val_list = train_test_split(temp_test_list, test_size=0.33, random_state=42)
+                # else:
+                #     test_list, val_list, _, _ = train_test_split(temp_test_list, temp_test_ages, test_size=0.55, stratify=temp_test_ages, random_state=42)
 
 
             data = {'train': train_list, 'test': test_list, 'val': val_list}
@@ -518,7 +575,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
         first_mesh.vertices = self.mean.detach().cpu().numpy()
         first_mesh.export(
-            os.path.join(self._precomputed_storage_path, 'mean.obj'))
+            os.path.join(self._precomputed_storage_path, f'mean_{self._data_type}.obj'))
     
     def age_data(self, fname):
         file_id = self.file_id(fname)
